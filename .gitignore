@@ -1,13 +1,31 @@
 # Python
 __pycache__/
 *.pyc
-
-# Virtual Env
 .venv/
 venv/
 
-# VS Code
-.vscode/
+# Video / Audio
+*.mp4
+*.mov
+*.avi
+*.wav
+*.mp3
 
-# OS
-.DS_Store
+# Images
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Fonts
+*.ttf
+*.otf
+
+# Output / cache
+output/
+render/
+preview/
+cache/
+
+# IDE
+.vscode/
