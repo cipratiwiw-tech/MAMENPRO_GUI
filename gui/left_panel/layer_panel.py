@@ -10,9 +10,8 @@ from gui.left_panel.audio_tab import AudioTab
 from gui.left_panel.render_tab import RenderTab
 
 class LayerPanel(QWidget):
-    # Sinyal untuk komunikasi ke Main/Preview
+    # Sinyal
     sig_layer_created = Signal(str, str)      
-    
     sig_layer_selected = Signal(str)     
     sig_layer_reordered = Signal(int, int) 
     sig_delete_layer = Signal(str)       
@@ -22,7 +21,6 @@ class LayerPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(320)
-        
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -34,7 +32,6 @@ class LayerPanel(QWidget):
         self.tab_editor = QWidget()
         self._init_editor_ui()
         
-        # ... (Tab lain tetap sama) ...
         self.tab_templates = TemplateTab()
         self.tab_chroma = PresetChromaPanel()
         self.tab_audio = AudioTab()
@@ -47,42 +44,35 @@ class LayerPanel(QWidget):
         self._connect_internal_signals()
 
     def _init_editor_ui(self):
-        """Membangun UI untuk Tab Editor"""
         layout = QVBoxLayout(self.tab_editor)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
         
-        # ==========================================
         # 1. ATAS: AUDIO & BACKGROUND
-        # ==========================================
         top_group_container = QWidget()
         top_group_layout = QVBoxLayout(top_group_container)
         top_group_layout.setContentsMargins(0, 0, 0, 0)
 
-        # --- Grup Audio Settings ---
+        # Audio
         self.group_audio = QGroupBox("AUDIO SETTINGS")
         audio_grid = QGridLayout(self.group_audio)
         self.btn_add_audio = QPushButton("Add Music")
         self.chk_mute = QCheckBox("Mute")
         self.spn_volume = QSpinBox(); self.spn_volume.setRange(0, 100); self.spn_volume.setValue(100)
-        
         audio_grid.addWidget(self.btn_add_audio, 0, 0, 1, 2)
         audio_grid.addWidget(QLabel("Vol:"), 1, 0); audio_grid.addWidget(self.spn_volume, 1, 1)
         audio_grid.addWidget(self.chk_mute, 1, 2)
         top_group_layout.addWidget(self.group_audio)
 
-        # --- Grup Background Settings ---
+        # Background
         self.group_bg = QGroupBox("BACKGROUND SETTING")
         self.group_bg.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #636e72; margin-top: 5px; }")
-        
         bg_main_layout = QVBoxLayout(self.group_bg)
         bg_main_layout.setSpacing(5)
         
-        # BARIS 1: Tombol + Toggle
         row1_layout = QHBoxLayout()
         self.btn_add_bg = QPushButton("Add Background")
         self.btn_add_bg.setStyleSheet("background-color: #2d3436; color: white;")
-        
         self.chk_bg_toggle = QCheckBox("ON")
         self.chk_bg_toggle.setChecked(True)
         self.chk_bg_toggle.setStyleSheet("font-weight: bold;")
@@ -92,17 +82,15 @@ class LayerPanel(QWidget):
         row1_layout.addWidget(self.chk_bg_toggle, stretch=1)
         bg_main_layout.addLayout(row1_layout)
 
-        # BARIS 2: Grid 3 Kolom Rapat
         bg_grid = QGridLayout()
         bg_grid.setSpacing(5)
         bg_grid.setContentsMargins(0, 0, 0, 0)
 
-        # Init Input
         self.spin_bg_x = self._create_spinbox("Posisi X", -2000, 2000, 0)
         self.spin_bg_y = self._create_spinbox("Posisi Y", -2000, 2000, 0)
         self.spin_bg_scale = self._create_spinbox("Zoom (Scale)", 1, 1000, 100)
-        self.spn_vignette = self._create_spinbox("Efek Vignette", 0, 100, 0)
-        self.spn_blur = self._create_spinbox("Efek Blur", 0, 100, 0)
+        self.spn_vignette = self._create_spinbox("Efek Vignette (0-100)", 0, 100, 0)
+        self.spn_blur = self._create_spinbox("Efek Blur (0-50)", 0, 50, 0) # Max 50 biar ga berat
 
         def add_cell(row, col, label_text, widget):
             container = QWidget()
@@ -120,16 +108,13 @@ class LayerPanel(QWidget):
         add_cell(0, 2, "Zm:", self.spin_bg_scale)
         add_cell(1, 0, "Vig:", self.spn_vignette)
         add_cell(1, 1, "Blr:", self.spn_blur)
-        bg_grid.addWidget(QLabel(""), 1, 2) # Empty cell
+        bg_grid.addWidget(QLabel(""), 1, 2) 
 
         bg_main_layout.addLayout(bg_grid)
         top_group_layout.addWidget(self.group_bg)
-
         layout.addWidget(top_group_container)
 
-        # ==========================================
         # 2. TENGAH: TIMELINE LAYERS
-        # ==========================================
         self.mid_container = QGroupBox("TIMELINE LAYERS")
         mid_layout = QVBoxLayout(self.mid_container)
 
@@ -137,24 +122,16 @@ class LayerPanel(QWidget):
         mid_layout.addWidget(self.list_layers)
 
         layer_btns = QHBoxLayout()
-                
-        # [MODIFIKASI] Tombol NEW dengan Menu Dropdown
         self.btn_new = QPushButton("+ New Frame")
         self.btn_new.setStyleSheet("background-color: #0984e3; color: white; font-weight: bold; padding: 5px;")
         
-        # Buat Menu Dropdown
         self.menu_new = QMenu(self)
         self.menu_new.setStyleSheet("QMenu { background-color: #2d3436; color: white; } QMenu::item:selected { background-color: #0984e3; }")
-        
-        # Tambahkan Aksi
         self.menu_new.addAction("Portrait (9:16)", lambda: self.action_add_new("portrait"))
         self.menu_new.addAction("Landscape (16:9)", lambda: self.action_add_new("landscape"))
         self.menu_new.addAction("Kotak / Square (1:1)", lambda: self.action_add_new("square"))
         self.menu_new.addAction("Bulat / Circle", lambda: self.action_add_new("circle"))
-        
-        # Pasang Menu ke Tombol
         self.btn_new.setMenu(self.menu_new)
-        
         
         self.btn_del = QPushButton("Del") 
         self.btn_up = QPushButton("▲"); self.btn_up.setFixedWidth(30)
@@ -166,55 +143,37 @@ class LayerPanel(QWidget):
         layer_btns.addWidget(self.btn_up)
         layer_btns.addWidget(self.btn_down)
         mid_layout.addLayout(layer_btns)
-
         layout.addWidget(self.mid_container, stretch=1)
 
-        # ==========================================
-        # 3. BAWAH: TOMBOL ADD CONTENT (MODIFIKASI)
-        # ==========================================
-        # Layout Horizontal 3 Tombol
+        # 3. BAWAH: TOMBOL ADD CONTENT
         content_btn_layout = QHBoxLayout()
         content_btn_layout.setSpacing(2)
-
-        # 1. Tombol Add Video/Image (60%)
         self.btn_add_content = QPushButton("+ Video/Img")
         self.btn_add_content.setFixedHeight(35)
-        # Warna default (Disabled style, akan diubah oleh set_content_button_enabled)
-        self.btn_add_content.setStyleSheet("background-color: #504945; color: #a89984; font-weight: bold;")
         self.btn_add_content.setEnabled(False) 
-        
-        # 2. Tombol Add Teks (20%)
         self.btn_add_text = QPushButton("+ Teks")
         self.btn_add_text.setFixedHeight(35)
-        self.btn_add_text.setStyleSheet("background-color: #504945; color: #a89984; font-weight: bold;")
         self.btn_add_text.setEnabled(False)
-        
-        # 3. Tombol Add Paragraf (20%)
         self.btn_add_paragraph = QPushButton("+ Para")
         self.btn_add_paragraph.setFixedHeight(35)
-        self.btn_add_paragraph.setStyleSheet("background-color: #504945; color: #a89984; font-weight: bold;")
         self.btn_add_paragraph.setEnabled(False)
 
-        # Masukkan ke layout dengan Stretch Factor (6 : 2 : 2)
         content_btn_layout.addWidget(self.btn_add_content, stretch=6)
         content_btn_layout.addWidget(self.btn_add_text, stretch=2)
         content_btn_layout.addWidget(self.btn_add_paragraph, stretch=2)
-
         layout.addLayout(content_btn_layout)
 
-        # ==========================================
         # 4. EXTRA & RENDER
-        # ==========================================
         self.render_tab = RenderTab()
         layout.addWidget(self.render_tab)
 
-        # Koneksi Signal Input Background
+        # Koneksi Signal BG
         self.spin_bg_x.valueChanged.connect(self._emit_bg_change)
         self.spin_bg_y.valueChanged.connect(self._emit_bg_change)
         self.spin_bg_scale.valueChanged.connect(self._emit_bg_change)
+        self.spn_blur.valueChanged.connect(self._emit_bg_change)
+        self.spn_vignette.valueChanged.connect(self._emit_bg_change)
     
-    # ... (Method _create_spinbox, _emit_bg_change, _on_bg_toggled_internal dll tetap sama) ...
-
     def _create_spinbox(self, tooltip, min_v, max_v, default=0):
         sb = QSpinBox()
         sb.setRange(min_v, max_v)
@@ -261,40 +220,22 @@ class LayerPanel(QWidget):
         self.spn_vignette.setValue(data.get("vig", 0))
         self.blockSignals(False)
   
-    # [MODIFIKASI] Method untuk mengaktifkan/mematikan 3 tombol sekaligus
     def set_content_button_enabled(self, enabled):
-        # 1. Tombol Video/Image
         self.btn_add_content.setEnabled(enabled)
-        
-        # 2. Tombol Teks
         self.btn_add_text.setEnabled(enabled)
-        
-        # 3. Tombol Paragraph
         self.btn_add_paragraph.setEnabled(enabled)
 
         if enabled:
-            # Warna Aktif
             self.btn_add_content.setStyleSheet("background-color: #3a0ca3; color: white; font-weight: bold;")
-            self.btn_add_text.setStyleSheet("background-color: #00b894; color: white; font-weight: bold;") # Hijau Teal
-            self.btn_add_paragraph.setStyleSheet("background-color: #0984e3; color: white; font-weight: bold;") # Biru Terang
-            
-            self.btn_add_content.setToolTip("Import Video/Gambar")
-            self.btn_add_text.setToolTip("Tambah Teks Singkat")
-            self.btn_add_paragraph.setToolTip("Tambah Paragraf")
+            self.btn_add_text.setStyleSheet("background-color: #00b894; color: white; font-weight: bold;") 
+            self.btn_add_paragraph.setStyleSheet("background-color: #0984e3; color: white; font-weight: bold;") 
         else:
-            # Warna Mati (Disabled)
             disabled_style = "background-color: #504945; color: #a89984; font-weight: bold;"
             self.btn_add_content.setStyleSheet(disabled_style)
             self.btn_add_text.setStyleSheet(disabled_style)
             self.btn_add_paragraph.setStyleSheet(disabled_style)
-            
-            msg = "Pilih Frame terlebih dahulu"
-            self.btn_add_content.setToolTip(msg)
-            self.btn_add_text.setToolTip(msg)
-            self.btn_add_paragraph.setToolTip(msg)
                
     def _connect_internal_signals(self):
-        # self.btn_new.clicked.connect(self.action_add_new)
         self.btn_up.clicked.connect(self.action_move_up)
         self.btn_down.clicked.connect(self.action_move_down)
         self.btn_del.clicked.connect(self.action_delete)
@@ -302,30 +243,27 @@ class LayerPanel(QWidget):
 
     def set_delete_enabled(self, enabled):
         self.btn_del.setEnabled(enabled)
-        if enabled:
-            self.btn_del.setToolTip("Hapus Layer")
-        else:
-            self.btn_del.setToolTip("Layer Terkunci")
             
     def set_reorder_enabled(self, enabled):
         self.btn_up.setEnabled(enabled)
         self.btn_down.setEnabled(enabled)
-        tooltip = "Pindah Layer" if enabled else "Layer Terkunci"
-        self.btn_up.setToolTip(tooltip)
-        self.btn_down.setToolTip(tooltip)
 
-    # [MODIFIKASI] Menerima parameter shape
     def action_add_new(self, shape="portrait"):
         count = self.list_layers.count()
         if count < 26: frame_char = chr(65 + count)
         else: frame_char = f"Z{count}"
-        name = f"FRAME {frame_char}"
-        item = QListWidgetItem(name)
+        
+        # Kirim sinyal saja, biarkan Controller yang handle add_layer_item_custom
+        self.sig_layer_created.emit(frame_char, shape)
+    
+    # --- METODE BARU UNTUK MENAMBAH ITEM KE LIST SECARA MANUAL ---
+    def add_layer_item_custom(self, full_name):
+        """Menambahkan item ke ListWidget dengan nama kustom (misal: FRAME TEXT 1)"""
+        item = QListWidgetItem(full_name)
         self.list_layers.addItem(item)
         self.list_layers.setCurrentItem(item)
-        
-        # Emit (Nama, Bentuk)
-        self.sig_layer_created.emit(frame_char, shape)
+        # Scroll ke bawah
+        self.list_layers.scrollToItem(item)
 
     def action_move_up(self):
         row = self.list_layers.currentRow()
@@ -362,6 +300,7 @@ class LayerPanel(QWidget):
         target_name = f"FRAME {code}"
         for i in range(self.list_layers.count()):
             item = self.list_layers.item(i)
+            # Match persis
             if item.text() == target_name:
                 self.list_layers.setCurrentItem(item)
                 self.list_layers.scrollToItem(item)
