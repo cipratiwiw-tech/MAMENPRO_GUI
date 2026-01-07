@@ -1,0 +1,4894 @@
+==========================================================================================
+MAMENPRO ENGINE BUNDLE
+ROOT PATH : C:\Users\rtauf\Desktop\BotBuatanMamen\MAMENPRO_CORE_v1
+CREATED   : 2026-01-05 03:04:51.200535
+MODE      : WHITELIST + BLACKLIST
+CONTENT   : ENGINE ONLY
+==========================================================================================
+
+
+==========================================================================================
+FILE: analysis\subtitle_cleanup\ocr_subtitle_detector.py
+==========================================================================================
+import cv2
+import numpy as np
+import pytesseract
+
+from .tesseract_setup import setup_tesseract
+setup_tesseract()
+
+
+class OCRSubtitleDetector:
+    """
+    Deteksi area subtitle otomatis menggunakan OCR.
+    """
+
+    def __init__(
+        self,
+        sample_frames=5,
+        min_confidence=50,
+        bottom_ratio=0.6
+    ):
+        """
+        sample_frames : jumlah frame untuk sampling
+        min_confidence: confidence OCR minimal
+        bottom_ratio  : area bawah video (0.6 = 60% ke bawah)
+        """
+        self.sample_frames = sample_frames
+        self.min_conf = min_confidence
+        self.bottom_ratio = bottom_ratio
+
+    def detect(self, video_path):
+        cap = cv2.VideoCapture(video_path)
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        boxes = []
+
+        step = max(1, total // self.sample_frames)
+
+        for i in range(0, total, step):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # Crop bagian bawah (subtitle biasanya di sini)
+            y_start = int(h * self.bottom_ratio)
+            roi = frame[y_start:h, 0:w]
+
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            gray = cv2.threshold(
+                gray, 0, 255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )[1]
+
+            data = pytesseract.image_to_data(
+                gray,
+                output_type=pytesseract.Output.DICT
+            )
+
+            for j in range(len(data["text"])):
+                text = data["text"][j].strip()
+                conf = int(data["conf"][j])
+
+                if conf < self.min_conf or not text:
+                    continue
+
+                x = data["left"][j]
+                y = data["top"][j] + y_start
+                w_box = data["width"][j]
+                h_box = data["height"][j]
+
+                boxes.append((x, y, w_box, h_box))
+
+        cap.release()
+
+        if not boxes:
+            return None
+
+        # Gabungkan semua box
+        xs = [b[0] for b in boxes]
+        ys = [b[1] for b in boxes]
+        xe = [b[0] + b[2] for b in boxes]
+        ye = [b[1] + b[3] for b in boxes]
+
+        x1 = max(0, min(xs) - 20)
+        y1 = max(0, min(ys) - 20)
+        x2 = min(w, max(xe) + 20)
+        y2 = min(h, max(ye) + 20)
+
+        return {
+            "x": x1,
+            "y": y1,
+            "width": x2 - x1,
+            "height": y2 - y1
+        }
+
+
+==========================================================================================
+FILE: analysis\subtitle_cleanup\subtitle_regions.json
+==========================================================================================
+{
+  "video_hash": "...",
+  "regions": {...}
+}
+
+
+==========================================================================================
+FILE: analysis\subtitle_cleanup\tesseract_setup.py
+==========================================================================================
+import os
+import shutil
+import pytesseract
+
+def setup_tesseract():
+    # 1️⃣ ENV explicit
+    cmd = os.getenv("TESSERACT_CMD")
+    if cmd and os.path.exists(cmd):
+        pytesseract.pytesseract.tesseract_cmd = cmd
+        return
+
+    # 2️⃣ Auto detect
+    cmd = shutil.which("tesseract")
+    if cmd:
+        pytesseract.pytesseract.tesseract_cmd = cmd
+        return
+
+    # 3️⃣ Fallback → biarkan pytesseract default
+    print("⚠ Tesseract path not configured, relying on system PATH")
+
+setup_tesseract()
+
+
+==========================================================================================
+FILE: audio_pipeline\align_audio.py
+==========================================================================================
+import subprocess
+
+
+def get_duration(wav):
+    return float(subprocess.check_output([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        wav
+    ]))
+
+
+def align_audio_simple(input_wav, target_duration, out_wav):
+    """
+    Align global audio secara HALUS.
+    Fokus natural, bukan sinkron per kata.
+    """
+
+    tts_duration = get_duration(input_wav)
+    ratio = target_duration / max(tts_duration, 0.01)
+
+    # clamp super aman (natural human range)
+    ratio = max(0.93, min(1.07, ratio))
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", input_wav,
+        "-filter:a", f"atempo={ratio}",
+        out_wav
+    ], check=True)
+
+    return out_wav
+
+
+==========================================================================================
+FILE: audio_pipeline\audio_clip.py
+==========================================================================================
+
+class AudioClip:
+    """
+    Representasi audio clip NON-DESTRUCTIVE
+    """
+    def __init__(
+        self,
+        source,
+        timeline_start,
+        in_time,
+        out_time,
+        volume=1.0
+    ):
+        self.source = source
+        self.timeline_start = float(timeline_start)
+        self.in_time = float(in_time)
+        self.out_time = float(out_time)
+        self.volume = float(volume)
+
+        self.duration = self.out_time - self.in_time
+        self.timeline_end = self.timeline_start + self.duration
+
+    def contains(self, t):
+        return self.timeline_start <= t < self.timeline_end
+
+
+==========================================================================================
+FILE: audio_pipeline\audio_timeline.py
+==========================================================================================
+import subprocess
+import tempfile
+import os
+from audio_pipeline.audio_clip import AudioClip
+
+
+class AudioTimeline:
+    def __init__(self):
+        self.clips = []
+
+    def add_clip(self, clip: AudioClip, transition=None):
+        clip.transition = transition  # disimpan untuk future use
+        self.clips.append(clip)
+        self.clips.sort(key=lambda c: c.timeline_start)
+
+    def render(self, output_wav):
+        """
+        Render audio timeline ke satu WAV (FINAL).
+        Catatan: crossfade BELUM diaktifkan (safe & deterministic).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            parts = []
+
+            for i, clip in enumerate(self.clips):
+                part = os.path.join(tmp, f"part_{i}.wav")
+
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-i", clip.source,
+                    "-ss", str(clip.in_time),
+                    "-to", str(clip.out_time),
+                    "-af", "anull",
+                    part
+                ], check=True)
+
+                parts.append(part)
+
+            concat_txt = os.path.join(tmp, "concat.txt")
+            with open(concat_txt, "w") as f:
+                for p in parts:
+                    f.write(f"file '{p}'\n")
+
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_txt,
+                "-c:a", "pcm_s16le",
+                output_wav
+            ], check=True)
+
+        return output_wav
+
+
+==========================================================================================
+FILE: audio_pipeline\audio_transition.py
+==========================================================================================
+
+class AudioCrossFade:
+    def __init__(self, duration):
+        self.duration = float(duration)
+
+
+==========================================================================================
+FILE: audio_pipeline\beat_detector.py
+==========================================================================================
+import subprocess
+import tempfile
+import os
+import wave
+import numpy as np
+
+
+def _ensure_pcm_wav(path):
+    """
+    Convert audio ke WAV PCM mono (jika perlu)
+    """
+    try:
+        with wave.open(path, "rb"):
+            return path
+    except:
+        pass
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".wav",
+        delete=False
+    )
+    tmp.close()
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", path,
+        "-ac", "1",
+        "-ar", "44100",
+        "-sample_fmt", "s16",
+        tmp.name
+    ], check=True)
+
+    return tmp.name
+
+
+def detect_beats(
+    audio_path,
+    frame_ms=20,
+    energy_threshold=1.3,
+    min_interval=0.25
+):
+    wav_path = _ensure_pcm_wav(audio_path)
+
+    with wave.open(wav_path, "rb") as wf:
+        sr = wf.getframerate()
+        data = np.frombuffer(
+            wf.readframes(wf.getnframes()),
+            dtype=np.int16
+        ).astype(np.float32)
+        data /= 32768.0
+
+    # ---- (LOGIKA LAMA TETAP) ----
+    frame_len = int(sr * frame_ms / 1000)
+    energies = []
+
+    for i in range(0, len(data), frame_len):
+        chunk = data[i:i + frame_len]
+        if len(chunk) == 0:
+            continue
+        energies.append(np.sum(chunk ** 2))
+
+    energies = np.array(energies)
+    avg = np.mean(energies)
+
+    beats = []
+    last_t = -999
+
+    for i, e in enumerate(energies):
+        t = i * frame_ms / 1000.0
+        if e > avg * energy_threshold and (t - last_t) > min_interval:
+            beats.append(t)
+            last_t = t
+
+    # cleanup temp
+    if wav_path != audio_path:
+        os.remove(wav_path)
+
+    return beats
+
+
+==========================================================================================
+FILE: audio_pipeline\dsp_effects.py
+==========================================================================================
+
+class AudioEffectsBuilder:
+    """
+    Helper untuk membuat FFmpeg Audio Filter Strings.
+    Digunakan untuk memoles audio (mixing & mastering) saat render.
+    """
+
+    @staticmethod
+    def compressor(threshold=-12, ratio=4, attack=20, release=1000):
+        """
+        Membuat filter Compressor.
+        Penting agar suara Voiceover terdengar tebal dan rata volumenya.
+        """
+        # acompressor syntax: threshold:ratio:attack:release:makeup:knee...
+        return (
+            f"acompressor=threshold={threshold}dB"
+            f":ratio={ratio}"
+            f":attack={attack}"
+            f":release={release}"
+            f":makeup=2"  # Auto gain makeup dikit biar gak kekecilan
+        )
+
+    @staticmethod
+    def equalizer_preset(mode="voice_boost"):
+        """
+        Preset EQ sederhana.
+        """
+        if mode == "voice_boost":
+            # Boost Bass dikit (80Hz) dan Treble (3kHz) biar renyah (Crisp)
+            return "equalizer=f=80:width_type=h:width=200:g=3,equalizer=f=3000:width_type=h:width=1000:g=2"
+        
+        elif mode == "bass_boost":
+            return "equalizer=f=60:width_type=h:width=100:g=5"
+            
+        elif mode == "lofi_radio":
+            # Potong frekuensi tinggi dan rendah (Bandpass)
+            return "highpass=f=200,lowpass=f=3000"
+            
+        return "anull" # No effect
+
+    @staticmethod
+    def reverb(depth=0.5):
+        """
+        Menambahkan gema.
+        depth: 0.0 (kering) - 1.0 (goa besar)
+        """
+        # aecho syntax: in_gain:out_gain:delays:decays
+        # Simple reverb simulation using echo
+        val = 0.6 * depth
+        return f"aecho=0.8:0.9:1000:{val}"
+
+    @staticmethod
+    def build_chain(filters):
+        """
+        Menggabungkan beberapa filter dengan koma.
+        Contoh: [compressor, eq] -> "acompressor=...,equalizer=..."
+        """
+        valid_filters = [f for f in filters if f and f != "anull"]
+        if not valid_filters:
+            return None
+        return ",".join(valid_filters)
+
+    @staticmethod
+    def sidechain_ducking(main_audio_label, trigger_audio_label, output_label, reduction_db=15):
+        """
+        LOGIKA CANGGIH: Auto-Ducking.
+        Musik (main) otomatis mengecil saat Voice (trigger) bunyi.
+        
+        Return berupa complex filter graph string.
+        """
+        # Menggunakan filter 'sidechaincompressor'
+        # Input 0: Musik (yang mau dikecilin)
+        # Input 1: Voice (pemicu)
+        cmd = (
+            f"[{main_audio_label}][{trigger_audio_label}]"
+            f"sidechaincompressor=threshold=0.1:ratio=5:attack=50:release=800:makeup=1"
+            f"[{output_label}]"
+            # Note: FFmpeg standard sidechain parameter agak beda di tiap versi,
+            # tapi logic dasarnya menerima 2 input stream.
+        )
+        return cmd
+
+==========================================================================================
+FILE: audio_pipeline\extract_audio.py
+==========================================================================================
+import subprocess
+
+
+def extract_audio(video_path, out_wav):
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vn",
+        "-ac", "1",
+        "-ar", "44100",
+        out_wav
+    ], check=True)
+
+    return out_wav
+
+
+==========================================================================================
+FILE: audio_pipeline\lmnt_tts.py
+==========================================================================================
+"""
+LMNT Text-to-Speech Module
+Module ini bisa dipanggil dari aplikasi lain untuk generate TTS
+
+Requirements:
+    pip install lmnt python-dotenv
+"""
+
+from dotenv import load_dotenv
+import os
+from lmnt import Lmnt
+
+load_dotenv()
+
+class LMNTTextToSpeech:
+    """Class untuk handle LMNT TTS operations"""
+    
+    def __init__(self, api_key=None):
+        """
+        Initialize LMNT client
+        Args:
+            api_key: LMNT API key. Jika None, akan ambil dari environment variable
+        """
+        if api_key is None:
+            api_key = os.getenv('LMNT_API_KEY')
+        
+        if not api_key:
+            raise ValueError("API key tidak ditemukan. Set LMNT_API_KEY di .env atau pass sebagai parameter")
+        
+        self.client = Lmnt(api_key=api_key)
+    
+    def generate(self, text, voice='lily', language='en', output_file=None, return_bytes=False):
+        """
+        Generate speech dari text
+        
+        Args:
+            text (str): Teks yang akan diubah ke audio
+            voice (str): Voice ID (default: 'lily')
+            language (str): Kode bahasa (default: 'en')
+                          Supported: en, id, ar, zh, cs, nl, fr, de, hi, it, ja, ko, pl, pt, ru, sk, es, sv, th, tr, uk, ur, vi
+            output_file (str): Path file output .wav (optional)
+            return_bytes (bool): Jika True, return audio bytes instead of save to file
+        
+        Returns:
+            bytes jika return_bytes=True, atau path file jika output_file specified
+        
+        Example:
+            tts = LMNTTextToSpeech()
+            tts.generate("Hello world", voice='lily', language='en', output_file='output.wav')
+        """
+        try:
+            with self.client.speech.with_streaming_response.generate(
+                text=text,
+                voice=voice,
+                language=language,
+                format="wav"
+            ) as response:
+                audio_data = b''
+                for chunk in response.iter_bytes():
+                    audio_data += chunk
+            
+            if return_bytes:
+                return audio_data
+            
+            if output_file:
+                with open(output_file, 'wb') as f:
+                    f.write(audio_data)
+                return output_file
+            
+            # Jika tidak ada output_file, buat default
+            default_file = f'tts_output_{voice}_{language}.wav'
+            with open(default_file, 'wb') as f:
+                f.write(audio_data)
+            return default_file
+            
+        except Exception as e:
+            raise Exception(f"Error generating speech: {e}")
+    
+    def generate_batch(self, texts, voice='lily', language='en', output_dir='outputs'):
+        """
+        Generate multiple audio files from list of texts
+        
+        Args:
+            texts (list): List of text strings
+            voice (str): Voice ID
+            language (str): Language code
+            output_dir (str): Directory untuk menyimpan output files
+        
+        Returns:
+            list: List of output file paths
+        
+        Example:
+            tts = LMNTTextToSpeech()
+            files = tts.generate_batch(
+                texts=["Hello", "World", "Test"],
+                voice='lily',
+                output_dir='audio_files'
+            )
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        output_files = []
+        
+        for i, text in enumerate(texts):
+            output_file = os.path.join(output_dir, f'audio_{i+1:03d}.wav')
+            self.generate(text, voice=voice, language=language, output_file=output_file)
+            output_files.append(output_file)
+            print(f"✓ Generated {i+1}/{len(texts)}: {output_file}")
+        
+        return output_files
+    
+    def get_custom_voices(self):
+        """
+        Get list of custom voices
+        
+        Returns:
+            list: List of tuples (voice_id, voice_name)
+        """
+        try:
+            all_voices = self.client.voices.list()
+            custom_voices = []
+            
+            for voice in all_voices:
+                owner = getattr(voice, 'owner', None)
+                if owner and owner != 'system':
+                    custom_voices.append({
+                        'id': voice.id,
+                        'name': voice.name,
+                        'owner': owner
+                    })
+            
+            return custom_voices
+        except Exception as e:
+            raise Exception(f"Error getting custom voices: {e}")
+    
+    def get_system_voices(self):
+        """
+        Get list of system voices
+        
+        Returns:
+            list: List of voice dictionaries
+        """
+        system_voices = [
+            {'id': 'amy', 'name': 'Amy', 'type': 'female', 'style': 'narrative'},
+            {'id': 'ansel', 'name': 'Ansel', 'type': 'male', 'style': 'narrative'},
+            {'id': 'autumn', 'name': 'Autumn', 'type': 'female', 'style': 'conversational'},
+            {'id': 'ava', 'name': 'Ava', 'type': 'female', 'style': 'conversational'},
+            {'id': 'bella', 'name': 'Bella', 'type': 'female', 'style': 'narrative'},
+            {'id': 'brandon', 'name': 'Brandon', 'type': 'male', 'style': 'narrative'},
+            {'id': 'lily', 'name': 'Lily', 'type': 'female', 'style': 'narrative'},
+            {'id': 'lucas', 'name': 'Lucas', 'type': 'male', 'style': 'narrative'},
+            {'id': 'morgan', 'name': 'Morgan', 'type': 'female', 'style': 'narrative'},
+            {'id': 'natalie', 'name': 'Natalie', 'type': 'female', 'style': 'conversational'},
+            # Add more as needed
+        ]
+        return system_voices
+
+
+# Convenience functions untuk quick usage
+def quick_generate(text, voice='lily', language='en', output_file='output.wav'):
+    """
+    Quick function untuk generate TTS tanpa perlu create instance
+    
+    Example:
+        from lmnt_tts import quick_generate
+        quick_generate("Hello world", voice='lily', output_file='hello.wav')
+    """
+    tts = LMNTTextToSpeech()
+    return tts.generate(text, voice=voice, language=language, output_file=output_file)
+
+
+def quick_generate_indonesian(text, voice='lily', output_file='output.wav'):
+    """
+    Quick function untuk generate TTS Bahasa Indonesia
+    
+    Example:
+        from lmnt_tts import quick_generate_indonesian
+        quick_generate_indonesian("Halo dunia", output_file='halo.wav')
+    """
+    tts = LMNTTextToSpeech()
+    return tts.generate(text, voice=voice, language='id', output_file=output_file)
+
+
+==========================================================================================
+FILE: audio_pipeline\mux_audio_video.py
+==========================================================================================
+import subprocess
+import os
+import tempfile
+
+
+def get_duration(path):
+    return float(subprocess.check_output([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path
+    ]))
+
+
+def mux_audio(video_path, audio_path, output_path):
+    """
+    RULES:
+    - video >= audio  → biarkan (audio habis dulu)
+    - audio > video   → freeze frame terakhir (TANPA BLACKOUT)
+    """
+
+    video_dur = get_duration(video_path)
+    audio_dur = get_duration(audio_path)
+
+    # ===============================
+    # CASE 1: VIDEO >= AUDIO
+    # ===============================
+    if video_dur >= audio_dur:
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            output_path
+        ], check=True)
+        return output_path
+
+    # ===============================
+    # CASE 2: AUDIO > VIDEO (FREEZE)
+    # ===============================
+    freeze_duration = audio_dur - video_dur
+
+    with tempfile.TemporaryDirectory() as tmp:
+        last_frame = os.path.join(tmp, "last.png")
+        freeze_video = os.path.join(tmp, "freeze.mp4")
+
+        # 1️⃣ Extract LAST FRAME (AMAN)
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-sseof", "-0.001",
+            "-i", video_path,
+            "-vframes", "1",
+            last_frame
+        ], check=True)
+
+        # 2️⃣ Loop LAST FRAME sesuai durasi audio
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-loop", "1",
+            "-i", last_frame,
+            "-t", str(freeze_duration),
+            "-vf", "format=yuv420p",
+            "-r", "30",
+            "-c:v", "libx264",
+            freeze_video
+        ], check=True)
+
+        # 3️⃣ Concat video asli + freeze video
+        concat_txt = os.path.join(tmp, "concat.txt")
+        with open(concat_txt, "w") as f:
+            f.write(f"file '{os.path.abspath(video_path)}'\n")
+            f.write(f"file '{freeze_video}'\n")
+
+        video_extended = os.path.join(tmp, "video_extended.mp4")
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_txt,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            video_extended
+        ], check=True)
+
+        # 4️⃣ Mux dengan audio (FINAL)
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-i", video_extended,
+            "-i", audio_path,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            output_path
+        ], check=True)
+
+    return output_path
+
+
+==========================================================================================
+FILE: audio_pipeline\pipeline_runner.py
+==========================================================================================
+import subprocess
+from audio_pipeline.extract_audio import extract_audio
+from audio_pipeline.transcribe_assembly import transcribe_audio
+from audio_pipeline.tts_lmnt import generate_tts
+from audio_pipeline.align_audio import align_audio_simple
+from audio_pipeline.mux_audio_video import mux_audio
+from audio_pipeline.temp_manager import TempWorkspace
+
+
+def get_video_duration(video):
+    return float(subprocess.check_output([
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        video
+    ]))
+
+
+def run_audio_pipeline(
+    input_video,
+    voice_id,
+    output_video="final_output.mp4",
+    keep_temp=False
+):
+    temp = TempWorkspace(prefix="audio_pipeline_")
+
+    try:
+        print("▶ Extract audio")
+        extracted_audio = temp.path("audio_orig.wav")
+        extract_audio(input_video, extracted_audio)
+
+        print("▶ Transcribe (ID)")
+        result = transcribe_audio(extracted_audio, language="id")
+
+        narration_text = " ".join(w["word"] for w in result["words"])
+
+        print("▶ Generate TTS")
+        tts_raw = temp.path("tts_raw.wav")
+        generate_tts(
+            text=narration_text,
+            voice_id=voice_id,
+            out_wav=tts_raw,
+            language="id"
+        )
+
+        print("▶ Align audio (global)")
+        final_audio = temp.path("audio_final.wav")
+        video_duration = get_video_duration(input_video)
+        align_audio_simple(tts_raw, video_duration, final_audio)
+
+        print("▶ Mux video + audio")
+        mux_audio(
+            video_path=input_video,
+            audio_path=final_audio,
+            output_path=output_video
+        )
+
+        return {
+            "output": output_video,
+            "text": narration_text
+        }
+
+    finally:
+        if keep_temp:
+            print("⚠ Temp folder dipertahankan:", temp.base)
+        else:
+            temp.cleanup()
+            print("🧹 Temp folder dibersihkan")
+
+
+==========================================================================================
+FILE: audio_pipeline\segment_builder.py
+==========================================================================================
+def build_segments(words):
+    """
+    Segment builder sederhana.
+    Tidak untuk pacing audio, hanya untuk metadata/subtitle.
+    """
+
+    if not words:
+        return []
+
+    return [{
+        "text": " ".join(w["word"] for w in words),
+        "start": words[0]["start"],
+        "end": words[-1]["end"],
+        "word_count": len(words)
+    }]
+
+
+==========================================================================================
+FILE: audio_pipeline\silence_detector.py
+==========================================================================================
+import wave
+import numpy as np
+
+
+def detect_silence_segments(
+    wav_path,
+    silence_threshold=0.02,
+    min_silence_duration=0.4,
+    frame_ms=20
+):
+    """
+    Return list of (start, end) silence segments in seconds
+    """
+    with wave.open(wav_path, "rb") as wf:
+        sr = wf.getframerate()
+        samples = wf.readframes(wf.getnframes())
+        data = np.frombuffer(samples, dtype=np.int16).astype(np.float32)
+        data /= 32768.0
+
+    frame_len = int(sr * frame_ms / 1000)
+    rms = []
+
+    for i in range(0, len(data), frame_len):
+        chunk = data[i:i + frame_len]
+        if len(chunk) == 0:
+            continue
+        rms.append(np.sqrt(np.mean(chunk ** 2)))
+
+    silence = np.array(rms) < silence_threshold
+
+    segments = []
+    start = None
+
+    for i, is_silent in enumerate(silence):
+        t = i * frame_ms / 1000.0
+
+        if is_silent and start is None:
+            start = t
+
+        if not is_silent and start is not None:
+            dur = t - start
+            if dur >= min_silence_duration:
+                segments.append((start, t))
+            start = None
+
+    if start is not None:
+        end = len(rms) * frame_ms / 1000.0
+        if end - start >= min_silence_duration:
+            segments.append((start, end))
+
+    return segments
+
+
+==========================================================================================
+FILE: audio_pipeline\temp_manager.py
+==========================================================================================
+import tempfile
+import os
+
+
+class TempWorkspace:
+    """
+    Workspace temporari untuk 1 kali render.
+    Semua file sementara HARUS masuk sini.
+    """
+
+    def __init__(self, prefix="render_"):
+        self._tmp = tempfile.TemporaryDirectory(prefix=prefix)
+        self.base = self._tmp.name
+
+    def path(self, filename):
+        return os.path.join(self.base, filename)
+
+    def cleanup(self):
+        self._tmp.cleanup()
+
+
+==========================================================================================
+FILE: audio_pipeline\transcribe_assembly.py
+==========================================================================================
+from caption.assemblyai import assembly_upload, assembly_transcribe
+
+
+def transcribe_audio(audio_path, language="id"):
+    """
+    Transcribe audio dengan bahasa dipaksa (Indonesia).
+    Ini WAJIB untuk akurasi.
+    """
+
+    upload_url = assembly_upload(audio_path)
+
+    # 🔥 PAKSA LANGUAGE INDONESIA
+    words = assembly_transcribe(
+        upload_url,
+        language_code=language
+    )
+
+    if not words:
+        raise RuntimeError("AssemblyAI returned empty transcript")
+
+    # Normalisasi output (anti perubahan SDK)
+    norm_words = []
+    for w in words:
+        text = (
+            w.get("word")
+            or w.get("text")
+            or w.get("token")
+            or w.get("punctuated_word")
+        )
+
+        if not text:
+            continue
+
+        norm_words.append({
+            "word": text,
+            "start": float(w["start"]),
+            "end": float(w["end"])
+        })
+
+    full_text = " ".join(w["word"] for w in norm_words)
+
+    return {
+        "language": language,
+        "text": full_text,
+        "words": norm_words
+    }
+
+
+==========================================================================================
+FILE: audio_pipeline\tts_lmnt.py
+==========================================================================================
+
+from audio_pipeline.lmnt_tts import LMNTTextToSpeech
+
+_tts_instance = None
+
+
+def _get_tts():
+    global _tts_instance
+    if _tts_instance is None:
+        _tts_instance = LMNTTextToSpeech()
+    return _tts_instance
+
+
+def generate_tts(
+    text,
+    voice_id,
+    out_wav,
+    language="id"   # ← DEFAULT INDONESIA
+):
+    """
+    Adapter LMNT TTS.
+    Bahasa HARUS eksplisit, meniru main.py yang sudah terbukti manjur.
+    """
+    tts = _get_tts()
+    return tts.generate(
+        text=text,
+        voice=voice_id,
+        language=language,   # ← INI KUNCI
+        output_file=out_wav
+    )
+
+
+==========================================================================================
+FILE: caption\assemblyai.py
+==========================================================================================
+import os
+import time
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+if not ASSEMBLYAI_API_KEY:
+    raise RuntimeError("ASSEMBLYAI_API_KEY tidak ditemukan di .env")
+
+AIAI_UPLOAD = "https://api.assemblyai.com/v2/upload"
+AIAI_TRANSCRIPT = "https://api.assemblyai.com/v2/transcript"
+
+HEADERS = {
+    "authorization": ASSEMBLYAI_API_KEY,
+    "content-type": "application/json"
+}
+
+
+def assembly_upload(audio_path):
+    headers = {"authorization": ASSEMBLYAI_API_KEY}
+    with open(audio_path, "rb") as f:
+        r = requests.post(AIAI_UPLOAD, headers=headers, data=f)
+    r.raise_for_status()
+    return r.json()["upload_url"]
+
+
+def assembly_transcribe(upload_url, language_code="id"):
+    """
+    Transcribe audio via AssemblyAI (FULL REST).
+    language_code: "id", "en", dll
+    """
+
+    # 1️⃣ Create transcript job
+    payload = {
+        "audio_url": upload_url,
+        "language_code": language_code,   # 🔑 PAKSA BAHASA
+        "punctuate": True,
+        "format_text": True
+    }
+
+    r = requests.post(
+        AIAI_TRANSCRIPT,
+        headers=HEADERS,
+        json=payload
+    )
+    r.raise_for_status()
+    transcript_id = r.json()["id"]
+
+    # 2️⃣ Poll sampai selesai
+    while True:
+        r = requests.get(
+            f"{AIAI_TRANSCRIPT}/{transcript_id}",
+            headers=HEADERS
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        status = data["status"]
+        if status == "completed":
+            break
+        if status == "error":
+            raise RuntimeError(f"AssemblyAI error: {data['error']}")
+
+        time.sleep(1.5)
+
+    # 3️⃣ Ambil word timestamps
+    words = []
+    for w in data.get("words", []):
+        words.append({
+            "word": w["text"],
+            "start": w["start"] / 1000.0,
+            "end": w["end"] / 1000.0
+        })
+
+    return words
+
+
+==========================================================================================
+FILE: caption\ass_builder.py
+==========================================================================================
+def ass_time(ms):
+    total = ms // 1000
+    cs = (ms // 10) % 100
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+def chunk_words(words, n):
+    buf = []
+    for w in words:
+        buf.append(w)
+        if len(buf) == n:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
+
+
+def ass_color_from_hex(hex_color):
+    hex_color = hex_color.lstrip("#")
+    r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
+    return f"&H00{b}{g}{r}"
+
+
+def make_ass_from_words(
+    words,
+    words_per_event=3,
+    font="Arial",
+    size=64,
+    color="&H00FFFFFF",
+    outline=3,
+    outline_color="&H00000000",
+    align=2,   # 2 = bottom-center
+    margin_v=120
+):
+    ...
+
+    header = f"""
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BorderStyle,Outline,Alignment
+Style: Default,{font},{size},{color},{color},1,{outline},2
+
+[Events]
+Format: Layer, Start, End, Style, Text
+""".strip()
+
+    events = []
+    for group in chunk_words(words, words_per_event):
+        start = ass_time(group[0]["start"])
+        end = ass_time(group[-1]["end"])
+        text = " ".join(w["text"] for w in group)
+        events.append(f"Dialogue: 0,{start},{end},Default,{text}")
+
+    return header + "\n" + "\n".join(events)
+
+
+==========================================================================================
+FILE: caption\caption_flow.py
+==========================================================================================
+import os
+import subprocess
+import tempfile
+from caption.assemblyai import assembly_upload, assembly_transcribe
+from caption.ass_builder import make_ass_from_words
+from caption.subtitle_renderer import burn_subtitle
+
+
+def extract_audio(video_path, wav_path):
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        wav_path
+    ], check=True)
+
+
+
+
+def apply_caption(video_path, output_path, words_per_event=3):
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_audio = os.path.join(tmp, "audio.wav")
+        tmp_ass = os.path.join(tmp, "caption.ass")
+
+        extract_audio(video_path, tmp_audio)
+
+        from caption.lang_detect import detect_language
+        lang = detect_language(tmp_audio)
+        if lang not in ("id", "en"):
+            lang = "id"
+
+        upload_url = assembly_upload(tmp_audio)
+        words = assembly_transcribe(upload_url, language_code=lang)
+
+        ass_text = make_ass_from_words(
+            words,
+            words_per_event=words_per_event
+        )
+
+        with open(tmp_ass, "w", encoding="utf-8") as f:
+            f.write(ass_text)
+
+        burn_subtitle(video_path, tmp_ass, output_path)
+
+
+==========================================================================================
+FILE: caption\lang_detect.py
+==========================================================================================
+import whisper
+
+_model = whisper.load_model("tiny")
+
+def detect_language(audio_path):
+    audio = whisper.load_audio(audio_path)
+    audio = whisper.pad_or_trim(audio)
+
+    mel = whisper.log_mel_spectrogram(audio).to(_model.device)
+    _, probs = _model.detect_language(mel)
+
+    return max(probs, key=probs.get)
+
+
+==========================================================================================
+FILE: caption\subtitle_renderer.py
+==========================================================================================
+import subprocess
+
+def burn_subtitle(video, ass_file, output):
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", video,
+        "-vf", f"subtitles={ass_file}",
+        "-c:a", "copy",
+        output
+    ], check=True)
+
+
+==========================================================================================
+FILE: caption\word_adapter.py
+==========================================================================================
+def normalize_words(words):
+    """
+    Normalize AssemblyAI word list
+    (data sudah dalam DETIK)
+    """
+
+    out = []
+
+    for w in words:
+        text = (
+            w.get("text")
+            or w.get("word")
+            or w.get("punctuated_word")
+        )
+
+        if not text:
+            continue
+
+        out.append({
+            "word": text.upper(),
+            "start": float(w["start"]),
+            "end": float(w["end"])
+        })
+
+    return out
+
+
+==========================================================================================
+FILE: effects\color\adaptive_contrast.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class AdaptiveContrastEffect(Layer):
+    """
+    Menentukan warna teks otomatis (hitam / putih)
+    berdasarkan luminance background di area teks.
+    Hasil disimpan ke context["adaptive_text"]["color"]
+    agar terbaca oleh TextAdvancedEffect.
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        sample_w=200,
+        sample_h=80,
+        threshold=140,
+        dark_color=(0, 0, 0),
+        light_color=(255, 255, 255),
+        z_index=-100,
+        enabled=True
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="AdaptiveContrast")
+        self.x = x
+        self.y = y
+        self.sample_w = int(sample_w)
+        self.sample_h = int(sample_h)
+        self.threshold = float(threshold)
+        self.dark_color = tuple(dark_color)
+        self.light_color = tuple(light_color)
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        h, w = frame.shape[:2]
+
+        px = self._resolve(self.x, w)
+        py = self._resolve(self.y, h)
+
+        x0 = max(0, px - self.sample_w // 2)
+        y0 = max(0, py - self.sample_h // 2)
+        x1 = min(w, x0 + self.sample_w)
+        y1 = min(h, y0 + self.sample_h)
+
+        roi = frame[y0:y1, x0:x1]
+        if roi.size == 0:
+            return frame
+
+        # Hitung luminance rata-rata
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        mean_luma = float(np.mean(gray))
+
+        # 🔑 KEY FINAL YANG BENAR
+        context.setdefault("adaptive_text", {})
+        context["adaptive_text"]["color"] = (
+            self.dark_color
+            if mean_luma > self.threshold
+            else self.light_color
+        )
+
+        return frame
+
+    def _resolve(self, value, max_value):
+        if isinstance(value, str) and value.endswith("%"):
+            return int(float(value[:-1]) / 100.0 * max_value)
+        return int(value)
+
+
+==========================================================================================
+FILE: effects\color\brightness.py
+==========================================================================================
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class BrightnessEffect(Layer):
+    def __init__(self, value, z_index=0, enabled=True):
+        super().__init__(z_index=z_index, enabled=enabled, name="Brightness")
+        self.value = int(value)
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        out = frame.astype(np.int16) + self.value
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+
+==========================================================================================
+FILE: effects\color\color_grade.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class ColorGradeEffect(Layer):
+    """
+    All-in-one Color Correction:
+    - Brightness (-100 to 100)
+    - Contrast   (-100 to 100)
+    - Saturation (0.0 to 3.0, 1.0 = normal)
+    - Hue        (-180 to 180)
+    - Vignette   (0.0 to 1.0)
+    """
+    def __init__(
+        self,
+        brightness=0,
+        contrast=0,
+        saturation=1.0,
+        hue=0,
+        vignette=0.0,
+        z_index=0,      # Default Z-Index
+        enabled=True,   # Default Enabled
+        start_frame=0,
+        end_frame=None
+    ):
+        # 🛠️ PERBAIKAN DI SINI:
+        # Sesuaikan dengan signature Layer(z_index, enabled, name)
+        super().__init__(z_index=z_index, enabled=enabled, name="ColorGrade")
+
+
+        # Simpan properti waktu secara manual di instance ini
+        self.start_frame = start_frame
+        self.end_frame = end_frame
+
+        self.brightness = float(brightness)
+        self.contrast = float(contrast)
+        self.saturation = float(saturation)
+        self.hue = float(hue)
+        self.vignette = float(vignette)
+        
+        # Cache untuk mask vignette
+        self._vignette_mask = None
+        self._last_shape = None
+
+    def _get_vignette_mask(self, shape):
+        h, w = shape[:2]
+        if self._vignette_mask is None or self._last_shape != (h, w):
+            X_result = cv2.getGaussianKernel(w, w/2)
+            Y_result = cv2.getGaussianKernel(h, h/2)
+            kernel = Y_result * X_result.T
+            mask = kernel / kernel.max()
+            self._vignette_mask = mask
+            self._last_shape = (h, w)
+        return self._vignette_mask
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        # Cek durasi aktif
+        if frame_index < self.start_frame:
+            return frame
+        if self.end_frame is not None and frame_index > self.end_frame:
+            return frame
+
+        # 1. BRIGHTNESS & CONTRAST
+        if self.contrast != 0 or self.brightness != 0:
+            alpha = (self.contrast + 100.0) / 100.0
+            beta = self.brightness
+            frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
+
+        # 2. SATURATION & HUE
+        if self.saturation != 1.0 or self.hue != 0:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+            
+            # Saturation (Channel 1)
+            if self.saturation != 1.0:
+                hsv[:, :, 1] *= self.saturation
+                
+            # Hue (Channel 0)
+            if self.hue != 0:
+                hsv[:, :, 0] += self.hue
+                hsv[:, :, 0] = np.mod(hsv[:, :, 0], 180)
+            
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+            frame = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # 3. VIGNETTE
+        if self.vignette > 0:
+            mask = self._get_vignette_mask(frame.shape)
+            strength = np.clip(self.vignette, 0.0, 1.0)
+            
+            mask_3c = np.dstack((mask, mask, mask))
+            vignette_factor = 1.0 - strength * (1.0 - mask_3c)
+            
+            frame = (frame.astype(np.float32) * vignette_factor).astype(np.uint8)
+
+        return frame
+
+==========================================================================================
+FILE: effects\composite\blend.py
+==========================================================================================
+from engine.core.layer_base import Layer
+from utils.blend_modes import BLEND_MODES
+
+
+class BlendEffect(Layer):
+    def __init__(self, mode="normal", opacity=1.0, start=0.0, end=None):
+        super().__init__(z_index=0, enabled=True, name="Blend")
+        self.mode = mode
+        self.opacity = float(opacity)
+        self.start = float(start)
+        self.end = float(end) if end is not None else None
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        t = frame_index / fps
+
+        if t < self.start:
+            return frame
+        if self.end is not None and t > self.end:
+            return frame
+
+        base_frame = context.get("base_frame", frame)
+
+
+        blend_func = BLEND_MODES.get(self.mode)
+        if blend_func is None:
+            return frame
+
+        global_opacity = float(context.get("opacity", 1.0))
+        final_opacity = max(0.0, min(1.0, self.opacity * global_opacity))
+
+        try:
+            return blend_func(base_frame, frame, final_opacity)
+        except Exception:
+            return frame
+
+
+==========================================================================================
+FILE: effects\composite\blur_feather_rounded.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class BlurFeatherRoundedEffect(Layer):
+    """
+    Blur area dengan feather + rounded corner.
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        width,
+        height,
+        blur_strength=31,
+        corner_radius=30,
+        feather=20,
+        start_frame=0,
+        end_frame=None,
+        z_index=0,
+        enabled=True
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="BlurFeatherRounded")
+
+        self.x = int(x)
+        self.y = int(y)
+        self.w = int(width)
+        self.h = int(height)
+
+        if blur_strength % 2 == 0:
+            blur_strength += 1
+        self.blur_strength = blur_strength
+
+        self.corner_radius = int(corner_radius)
+        self.feather = int(feather)
+
+        self.start_frame = start_frame
+        self.end_frame = end_frame
+
+    def _rounded_rect_mask(self, shape):
+        mask = np.zeros(shape[:2], dtype=np.uint8)
+
+        x1, y1 = self.x, self.y
+        x2, y2 = self.x + self.w, self.y + self.h
+        r = min(self.corner_radius, self.w // 2, self.h // 2)
+
+        cv2.rectangle(mask, (x1 + r, y1), (x2 - r, y2), 255, -1)
+        cv2.rectangle(mask, (x1, y1 + r), (x2, y2 - r), 255, -1)
+
+        cv2.circle(mask, (x1 + r, y1 + r), r, 255, -1)
+        cv2.circle(mask, (x2 - r, y1 + r), r, 255, -1)
+        cv2.circle(mask, (x1 + r, y2 - r), r, 255, -1)
+        cv2.circle(mask, (x2 - r, y2 - r), r, 255, -1)
+
+        return mask
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        if frame_index < self.start_frame:
+            return frame
+        if self.end_frame is not None and frame_index > self.end_frame:
+            return frame
+
+        blurred = cv2.GaussianBlur(
+            frame,
+            (self.blur_strength, self.blur_strength),
+            0
+        )
+
+        mask = self._rounded_rect_mask(frame.shape)
+
+        if self.feather > 0:
+            k = self.feather * 2 + 1
+            mask = cv2.GaussianBlur(mask, (k, k), 0)
+
+        alpha = mask.astype(float) / 255.0
+        alpha = cv2.merge([alpha, alpha, alpha])
+
+        out = frame * (1 - alpha) + blurred * alpha
+        return out.astype(np.uint8)
+
+
+==========================================================================================
+FILE: effects\composite\blur_region.py
+==========================================================================================
+import cv2
+from engine.core.layer_base import Layer
+
+
+class BlurRegionEffect(Layer):
+    """
+    Blur area tertentu pada video.
+    Cocok untuk menutup subtitle / watermark video asli.
+    """
+
+    def __init__(
+        self,
+        x,
+        y,
+        width,
+        height,
+        blur_strength=25,
+        start_frame=0,
+        end_frame=None,
+        z_index=0,
+        enabled=True
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="BlurRegion")
+
+        self.x = int(x)
+        self.y = int(y)
+        self.w = int(width)
+        self.h = int(height)
+
+        if blur_strength % 2 == 0:
+            blur_strength += 1
+        self.blur_strength = blur_strength
+
+        self.start_frame = start_frame
+        self.end_frame = end_frame
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        if frame_index < self.start_frame:
+            return frame
+        if self.end_frame is not None and frame_index > self.end_frame:
+            return frame
+
+        h, w = frame.shape[:2]
+
+        x1 = max(0, self.x)
+        y1 = max(0, self.y)
+        x2 = min(w, self.x + self.w)
+        y2 = min(h, self.y + self.h)
+
+        if x2 <= x1 or y2 <= y1:
+            return frame
+
+        roi = frame[y1:y2, x1:x2]
+        blurred = cv2.GaussianBlur(
+            roi,
+            (self.blur_strength, self.blur_strength),
+            0
+        )
+
+        frame[y1:y2, x1:x2] = blurred
+        return frame
+
+
+==========================================================================================
+FILE: effects\composite\chroma_key.py
+==========================================================================================
+from engine.core.layer_base import Layer
+from effects.composite.chroma.chroma_math import chroma_key_rgba
+
+
+class ChromaKeyEffect(Layer):
+    def __init__(self, key_color=(0,255,0), threshold=40, softness=10, z_index=0, enabled=True):
+        super().__init__(z_index=z_index, enabled=enabled, name="ChromaKey")
+        self.key_color = key_color
+        self.threshold = threshold
+        self.softness = softness
+
+
+    def apply(self, frame, frame_index, fps, context):
+        out = chroma_key_rgba(
+            frame,
+            self.key_color,
+            self.threshold,
+            self.softness
+        )
+        context["force_bgra"] = True
+        return out
+
+
+==========================================================================================
+FILE: effects\composite\despill.py
+==========================================================================================
+from engine.core.layer_base import Layer
+from effects.composite.chroma.despill_math import despill_rgba
+
+
+class DespillEffect(Layer):
+    def __init__(self, strength=0.5, z_index=0, enabled=True):
+        super().__init__(z_index=z_index, enabled=enabled, name="Despill")
+        self.strength = strength
+
+    def apply(self, frame, frame_index, fps, context):
+        if frame.shape[2] != 4:
+            return frame
+        return despill_rgba(frame, self.strength)
+
+
+==========================================================================================
+FILE: effects\composite\image_overlay.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class ImageOverlayEffect(Layer):
+    def __init__(self, x=0, y=0, scale=1.0, z_index=0, enabled=True):
+        super().__init__(z_index=z_index, enabled=enabled, name="ImageOverlay")
+        self.x = int(x)
+        self.y = int(y)
+        self.scale = float(scale)
+
+    def apply(self, frame, frame_index, fps, context):
+        overlay = context.get("overlay_frame")
+        if overlay is None:
+            return frame
+
+        if overlay.ndim != 3 or overlay.shape[2] not in (3, 4):
+            return frame
+
+        h_bg, w_bg = frame.shape[:2]
+
+        if self.scale != 1.0:
+            overlay = cv2.resize(
+                overlay, None,
+                fx=self.scale, fy=self.scale,
+                interpolation=cv2.INTER_LINEAR
+            )
+
+        h_ov, w_ov = overlay.shape[:2]
+
+        x1 = max(self.x, 0)
+        y1 = max(self.y, 0)
+        x2 = min(self.x + w_ov, w_bg)
+        y2 = min(self.y + h_ov, h_bg)
+
+        if x1 >= x2 or y1 >= y2:
+            return frame
+
+        ov_x1 = x1 - self.x
+        ov_y1 = y1 - self.y
+        ov_x2 = ov_x1 + (x2 - x1)
+        ov_y2 = ov_y1 + (y2 - y1)
+
+        roi_bg = frame[y1:y2, x1:x2]
+        roi_ov = overlay[ov_y1:ov_y2, ov_x1:ov_x2]
+
+        if roi_ov.shape[2] == 4:
+            alpha = roi_ov[:, :, 3:4].astype(np.float32) / 255.0
+            alpha *= float(context.get("opacity", 1.0))
+            alpha = np.clip(alpha, 0.0, 1.0)
+
+            rgb = roi_ov[:, :, :3].astype(np.float32)
+            bg = roi_bg.astype(np.float32)
+
+            blended = alpha * rgb + (1.0 - alpha) * bg
+            frame[y1:y2, x1:x2] = blended.astype(np.uint8)
+        else:
+            frame[y1:y2, x1:x2] = roi_ov
+
+        # prevent overlay carry-over
+        context["overlay_frame"] = None
+        return frame
+
+
+
+==========================================================================================
+FILE: effects\composite\mask_image.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class ImageMaskEffect(Layer):
+    """
+    Image-based mask (grayscale / alpha).
+    Putih = terlihat, hitam = transparan.
+    """
+
+    def __init__(
+        self,
+        mask_path,
+        x="50%",
+        y="50%",
+        scale=1.0,
+        feather=0,
+        invert=False,
+        z_index=-50,
+        enabled=True,
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="ImageMask")
+
+        self.mask_path = mask_path
+        self.x = x
+        self.y = y
+        self.scale = float(scale)
+        self.feather = int(feather)
+        self.invert = invert
+
+        self._mask_img = None
+
+    # --------------------------------------------------
+
+    def apply(self, frame, frame_index, fps, context):
+        if self._mask_img is None:
+            self._mask_img = cv2.imread(self.mask_path, cv2.IMREAD_GRAYSCALE)
+            if self._mask_img is None:
+                return frame
+
+        h, w = frame.shape[:2]
+        cx = self._resolve(self.x, w)
+        cy = self._resolve(self.y, h)
+
+        mask = self._mask_img.copy()
+
+        if self.scale != 1.0:
+            mask = cv2.resize(
+                mask,
+                None,
+                fx=self.scale,
+                fy=self.scale,
+                interpolation=cv2.INTER_LINEAR
+            )
+
+        mh, mw = mask.shape[:2]
+
+        canvas = np.zeros((h, w), dtype=np.uint8)
+        x0 = cx - mw // 2
+        y0 = cy - mh // 2
+        x1 = x0 + mw
+        y1 = y0 + mh
+
+        sx0 = max(0, -x0)
+        sy0 = max(0, -y0)
+        sx1 = mw - max(0, x1 - w)
+        sy1 = mh - max(0, y1 - h)
+
+        tx0 = max(0, x0)
+        ty0 = max(0, y0)
+        tx1 = tx0 + (sx1 - sx0)
+        ty1 = ty0 + (sy1 - sy0)
+
+        canvas[ty0:ty1, tx0:tx1] = mask[sy0:sy1, sx0:sx1]
+
+        if self.feather > 0:
+            k = self.feather * 2 + 1
+            canvas = cv2.GaussianBlur(canvas, (k, k), 0)
+
+        if self.invert:
+            canvas = 255 - canvas
+
+        if frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+            context["force_bgra"] = True
+
+        alpha = frame[:, :, 3].astype(np.float32)
+        mask_f = canvas.astype(np.float32) / 255.0
+        opacity = float(context.get("opacity", 1.0))
+        frame[:, :, 3] = (alpha * mask_f * opacity).astype(np.uint8)
+
+
+        return frame
+
+    def _resolve(self, value, max_value):
+        if isinstance(value, str) and value.endswith("%"):
+            return int(float(value[:-1]) / 100 * max_value)
+        return int(value)
+
+
+==========================================================================================
+FILE: effects\composite\mask_shape.py
+==========================================================================================
+import cv2
+import numpy as np
+from engine.core.layer_base import Layer
+
+
+class ShapeMaskEffect(Layer):
+    def __init__(
+        self,
+        shape="rect",
+        x="50%",
+        y="50%",
+        width=400,
+        height=300,
+        radius=40,
+        feather=0,
+        invert=False,
+        enabled=True,
+        z_index=-50
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="ShapeMask")
+        self.shape = shape
+        self.x = x
+        self.y = y
+        self.width = int(width)
+        self.height = int(height)
+        self.radius = int(radius)
+        self.feather = int(feather)
+        self.invert = invert
+
+    def apply(self, frame, frame_index, fps, context):
+        opacity = float(context.get("opacity", 1.0))
+        opacity = max(0.0, min(1.0, opacity))
+
+        if opacity <= 0:
+            return frame
+
+        if frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+
+        h, w = frame.shape[:2]
+        cx = self._resolve(self.x, w)
+        cy = self._resolve(self.y, h)
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+
+        if self.shape == "rect":
+            x0 = cx - self.width // 2
+            y0 = cy - self.height // 2
+            x1 = cx + self.width // 2
+            y1 = cy + self.height // 2
+            cv2.rectangle(mask, (x0, y0), (x1, y1), 255, -1)
+
+        elif self.shape == "round_rect":
+            self._draw_round_rect(mask, cx, cy)
+
+        elif self.shape == "circle":
+            r = min(self.width, self.height) // 2
+            cv2.circle(mask, (cx, cy), r, 255, -1)
+
+        if self.feather > 0:
+            k = self.feather * 2 + 1
+            mask = cv2.GaussianBlur(mask, (k, k), 0)
+
+        if self.invert:
+            mask = 255 - mask
+
+        alpha = frame[:, :, 3].astype(np.float32)
+        mask_f = (mask.astype(np.float32) / 255.0) * opacity
+        frame[:, :, 3] = np.clip(alpha * mask_f, 0, 255).astype(np.uint8)
+
+        return frame
+
+    def _draw_round_rect(self, mask, cx, cy):
+        w, h = self.width, self.height
+        r = min(self.radius, w // 2, h // 2)
+
+        x0 = cx - w // 2
+        y0 = cy - h // 2
+        x1 = cx + w // 2
+        y1 = cy + h // 2
+
+        cv2.rectangle(mask, (x0 + r, y0), (x1 - r, y1), 255, -1)
+        cv2.rectangle(mask, (x0, y0 + r), (x1, y1 - r), 255, -1)
+
+        cv2.circle(mask, (x0 + r, y0 + r), r, 255, -1)
+        cv2.circle(mask, (x1 - r, y0 + r), r, 255, -1)
+        cv2.circle(mask, (x0 + r, y1 - r), r, 255, -1)
+        cv2.circle(mask, (x1 - r, y1 - r), r, 255, -1)
+
+    def _resolve(self, value, max_value):
+        if isinstance(value, str) and value.endswith("%"):
+            return int(float(value[:-1]) / 100 * max_value)
+        return int(value)
+
+
+==========================================================================================
+FILE: effects\composite\opacity.py
+==========================================================================================
+from effects.utils.easing import EASING_MAP
+from engine.core.layer_base import Layer
+
+
+class OpacityEffect(Layer):
+    def __init__(self, start, end, from_value=0.0, to_value=1.0, easing="linear"):
+        super().__init__(z_index=0, enabled=True, name="Opacity")
+        self.start = float(start)
+        self.end = float(end)
+        self.from_value = float(from_value)
+        self.to_value = float(to_value)
+        self.easing_fn = EASING_MAP.get(easing, EASING_MAP["linear"])
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        t = frame_index / fps
+
+        if self.end <= self.start:
+            context["opacity"] = self.to_value
+            return frame
+
+        if t <= self.start:
+            context["opacity"] = self.from_value
+            return frame
+
+        if t >= self.end:
+            context["opacity"] = self.to_value
+            return frame
+
+        p = (t - self.start) / (self.end - self.start)
+        p = max(0.0, min(1.0, self.easing_fn(p)))
+
+        opacity = self.from_value + (self.to_value - self.from_value) * p
+        context["opacity"] = max(0.0, min(1.0, opacity))
+        return frame
+
+
+==========================================================================================
+FILE: effects\composite\chroma\chroma_math.py
+==========================================================================================
+import numpy as np
+import cv2
+
+
+def chroma_key_rgba(
+    frame,
+    key_color=(0, 255, 0),   # BGR
+    threshold=40,
+    softness=10
+):
+    """
+    Apply chroma key and return BGRA frame.
+    - frame: BGR or BGRA (uint8)
+    - key_color: (B, G, R)
+    """
+
+    if frame.ndim != 3 or frame.shape[2] not in (3, 4):
+        return frame
+
+    # Convert to BGR
+    if frame.shape[2] == 4:
+        bgr = frame[:, :, :3].astype(np.float32)
+    else:
+        bgr = frame.astype(np.float32)
+
+    key = np.array(key_color, dtype=np.float32)
+
+    # Distance from key color
+    diff = np.linalg.norm(bgr - key, axis=2)
+
+    # Alpha mask
+    alpha = np.clip(
+        (diff - threshold) / max(softness, 1e-5),
+        0.0,
+        1.0
+    )
+
+    alpha = (alpha * 255).astype(np.uint8)
+
+    # Build BGRA
+    bgra = np.zeros((bgr.shape[0], bgr.shape[1], 4), dtype=np.uint8)
+    bgra[:, :, :3] = np.clip(bgr, 0, 255).astype(np.uint8)
+    bgra[:, :, 3] = alpha
+
+    return bgra
+
+
+==========================================================================================
+FILE: effects\composite\chroma\despill_math.py
+==========================================================================================
+import numpy as np
+
+
+def despill_rgba(bgra, strength=0.5):
+    """
+    Reduce green spill on BGRA frame.
+    - bgra: BGRA uint8
+    - strength: 0.0 – 1.0
+    """
+
+    if bgra.ndim != 3 or bgra.shape[2] != 4:
+        return bgra
+
+    strength = float(np.clip(strength, 0.0, 1.0))
+
+    rgb = bgra[:, :, :3].astype(np.float32)
+    alpha = bgra[:, :, 3:4]
+
+    b = rgb[:, :, 0]
+    g = rgb[:, :, 1]
+    r = rgb[:, :, 2]
+
+    avg_rb = (r + b) * 0.5
+    g_new = g * (1.0 - strength) + avg_rb * strength
+
+    rgb[:, :, 1] = g_new
+    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+    return np.concatenate([rgb, alpha], axis=2)
+
+
+==========================================================================================
+FILE: effects\composite\chroma\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: effects\text\interactive_text.py
+==========================================================================================
+from engine.interaction.interactive import InteractiveLayerMixin
+from effects.text.text_advanced import TextAdvancedEffect
+
+class InteractiveTextLayer(InteractiveLayerMixin, TextAdvancedEffect):
+    """
+    Wrapper GUI untuk TextAdvancedEffect
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+==========================================================================================
+FILE: effects\text\text_advanced.py
+==========================================================================================
+import os
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from engine.core.layer_base import Layer
+from utils.paths import project_path
+from effects.utils.easing import ease_value
+
+
+class TextAdvancedEffect(Layer):
+    def __init__(
+        self,
+        text,
+        x,
+        y,
+        font_path,
+        font_size=32,
+        color=(255, 255, 255),
+        opacity=1.0,
+        z_index=0,
+        enabled=True,
+        align="left",
+        stroke_width=0,
+        stroke_color=(0, 0, 0),
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="TextAdvanced")
+
+        if not hasattr(self, "transform"):
+            raise RuntimeError("LayerBase HARUS membuat self.transform sebelum TextAdvancedEffect")
+
+        # Transform
+        self.transform.x = int(x)
+        self.transform.y = int(y)
+        if self.transform.scale == 0:
+            self.transform.scale = 1.0
+
+        # Text props
+        self.text = text
+        self.font_path = font_path
+        self.full_font_path = project_path(font_path)
+        self.base_font_size = int(font_size)
+        self.color = tuple(color)
+        self.base_opacity = float(opacity)
+        self.align = align
+        self.stroke_width = int(stroke_width)
+        self.stroke_color = tuple(stroke_color)
+        self.padding = 10
+
+        # Cache
+        self._cached_surface = None
+        self._cached_rotated = None
+        self._cache_params = None
+        self._last_rotation = None
+        self._w_orig = 0
+        self._h_orig = 0
+        
+        # Motion easing untuk drag
+        self._target_x = x
+        self._target_y = y
+        self._easing_factor = 0.35  # Smoothing factor
+
+    # -------------------------------------------------
+
+    def _render_text_bitmap(self, scale):
+        if not self.font_path or not os.path.exists(self.full_font_path):
+            return None
+
+        size = max(1, int(self.base_font_size * scale))
+
+        try:
+            font = ImageFont.truetype(self.full_font_path, size)
+        except Exception:
+            font = ImageFont.load_default()
+
+        left, top, right, bottom = font.getbbox(self.text)
+        text_w = right - left
+        text_h = bottom - top
+
+        pad = int(self.stroke_width * scale * 2) + self.padding
+        img_w = int(text_w + pad * 2)
+        img_h = int(text_h + pad * 2)
+
+        img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        x_txt = pad - left
+        y_txt = pad - top
+
+        # Stroke
+        if self.stroke_width > 0:
+            sw = int(self.stroke_width * scale)
+            for dx in range(-sw, sw + 1):
+                for dy in range(-sw, sw + 1):
+                    if dx * dx + dy * dy > sw * sw:
+                        continue
+                    draw.text((x_txt + dx, y_txt + dy), self.text, font=font, fill=self.stroke_color)
+
+        # Fill
+        draw.text((x_txt, y_txt), self.text, font=font, fill=self.color)
+
+        self._w_orig = img_w
+        self._h_orig = img_h
+
+        return np.array(img)
+
+    # -------------------------------------------------
+
+    def apply(self, frame, frame_index, fps, context: dict):
+        # === Adaptive color ===
+        adaptive = context.get("adaptive_text", {}).get("color")
+        if adaptive is not None and adaptive != self.color:
+            self.color = adaptive
+            self._cached_surface = None
+
+        scale = self.transform.scale
+        rot = getattr(self.transform, "rotation", 0)
+
+        cache_key = (
+            self.text,
+            self.font_path,
+            self.color,
+            self.stroke_width,
+            self.stroke_color,
+            round(scale, 3),
+        )
+
+        # Render bitmap
+        if self._cached_surface is None or self._cache_params != cache_key:
+            surf = self._render_text_bitmap(scale)
+            if surf is None:
+                return frame
+            self._cached_surface = surf
+            self._cache_params = cache_key
+            self._cached_rotated = None
+            self._last_rotation = None
+
+        # Rotate cache
+        if self._cached_rotated is None or self._last_rotation != rot:
+            if rot == 0:
+                self._cached_rotated = self._cached_surface
+            else:
+                pil = Image.fromarray(self._cached_surface)
+                pil = pil.rotate(rot, expand=True, resample=Image.BICUBIC)
+                self._cached_rotated = np.array(pil)
+            self._last_rotation = rot
+
+        overlay = self._cached_rotated
+        if overlay is None:
+            return frame
+
+        h, w = overlay.shape[:2]
+
+        cx = self.transform.x + self._w_orig / 2
+        cy = self.transform.y + self._h_orig / 2
+        px = int(cx - w / 2)
+        py = int(cy - h / 2)
+
+        fh, fw = frame.shape[:2]
+        x1, y1 = max(0, px), max(0, py)
+        x2, y2 = min(fw, px + w), min(fh, py + h)
+
+        if x1 >= x2 or y1 >= y2:
+            return frame
+
+        ox1, oy1 = x1 - px, y1 - py
+        ox2, oy2 = ox1 + (x2 - x1), oy1 + (y2 - y1)
+
+        roi = frame[y1:y2, x1:x2]
+        ov = overlay[oy1:oy2, ox1:ox2]
+
+        alpha = ov[:, :, 3:4].astype(np.float32) / 255.0
+        alpha *= self.base_opacity
+        alpha *= float(context.get("opacity", 1.0))
+        alpha = np.clip(alpha, 0.0, 1.0)
+
+        rgb = ov[:, :, :3].astype(np.float32)
+        bg = roi.astype(np.float32)
+
+        roi[:] = (alpha * rgb + (1.0 - alpha) * bg).astype(np.uint8)
+        return frame
+
+    # -------------------------------------------------
+
+    def get_bbox(self):
+        if self._cached_surface is None:
+            self._render_text_bitmap(self.transform.scale)
+
+        w = self._w_orig + self.padding * 2
+        h = self._h_orig + self.padding * 2
+
+        return (
+            int(self.transform.x - self.padding),
+            int(self.transform.y - self.padding),
+            int(w),
+            int(h),
+        )
+
+    # di TextAdvancedEffect
+
+    def set_drag_target(self, target_x, target_y):
+        """Set target position untuk easing saat drag."""
+        self._target_x = float(target_x)
+        self._target_y = float(target_y)
+    
+    def set_easing_factor(self, factor):
+        """Set faktor smoothing (0.1-0.9), lebih rendah = lebih smooth."""
+        self._easing_factor = max(0.01, min(0.99, float(factor)))
+    
+    def update_with_easing(self):
+        """Update posisi dengan motion easing exponential."""
+        self.transform.x += (self._target_x - self.transform.x) * self._easing_factor
+        self.transform.y += (self._target_y - self.transform.y) * self._easing_factor
+
+    def draw_fast(self, frame):
+        """
+        Super-fast preview draw dengan alpha mask (TANPA alpha blend float).
+        Aman, HALUS, TANPA background hitam.
+        Includes motion easing untuk smooth drag.
+        """
+        if self._cached_surface is None:
+            self._render_text_bitmap(self.transform.scale)
+
+        if self._cached_surface is None:
+            return frame
+
+        # Update posisi dengan easing
+        self.update_with_easing()
+
+        overlay = self._cached_surface
+        h, w = overlay.shape[:2]
+
+        fh, fw = frame.shape[:2]
+        x = int(self.transform.x)
+        y = int(self.transform.y)
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(fw, x + w)
+        y2 = min(fh, y + h)
+
+        if x1 >= x2 or y1 >= y2:
+            return frame
+
+        ox1 = x1 - x
+        oy1 = y1 - y
+        ox2 = ox1 + (x2 - x1)
+        oy2 = oy1 + (y2 - y1)
+
+        ov = overlay[oy1:oy2, ox1:ox2]
+        rgb = ov[..., :3]
+        alpha = ov[..., 3]
+
+        mask = alpha > 0
+
+        roi = frame[y1:y2, x1:x2]
+        roi[mask] = rgb[mask]
+
+        return frame
+
+
+==========================================================================================
+FILE: effects\text\text_karaoke_bounce.py
+==========================================================================================
+import math
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from effects.easing import ease_out_back
+
+
+class KaraokeBounceScaleEffect:
+    """
+    Karaoke subtitle dengan bounce + scale pada kata aktif.
+    Cocok dikombinasikan dengan highlight / gradient.
+    """
+
+    def __init__(
+        self,
+        text,
+        x,
+        y,
+        start,
+        end,
+        max_width,
+        anchor="center",
+        line_spacing=10,
+
+        font_path="assets/fonts/Montserrat-Bold.ttf",
+        font_size=40,
+
+        base_color=(200, 200, 200),
+        active_color=(255, 255, 255),
+
+        scale_from=1.0,
+        scale_to=1.25,
+        bounce_strength=0.35,   # semakin besar → makin pop
+
+        z_index=0
+    ):
+        self.text = text
+        self.words = text.split(" ")
+
+        self.x = x
+        self.y = y
+        self.start = float(start)
+        self.end = float(end)
+        self.max_width = max_width
+        self.anchor = anchor
+        self.line_spacing = int(line_spacing)
+
+        self.font_path = font_path
+        self.font_size = font_size
+
+        self.base_color = base_color
+        self.active_color = active_color
+
+        self.scale_from = float(scale_from)
+        self.scale_to = float(scale_to)
+        self.bounce_strength = float(bounce_strength)
+
+        self.z_index = z_index
+
+        self._font_base = ImageFont.truetype(font_path, font_size)
+        self._lines = None
+
+    # --------------------------------------------------
+
+    def _compute_lines(self, draw, max_w):
+        space_w = draw.textbbox((0, 0), " ", font=self._font_base)[2]
+        lines = []
+        cur_words = []
+        cur_w = 0
+
+        for word in self.words:
+            bw = draw.textbbox((0, 0), word, font=self._font_base)[2]
+            next_w = bw if not cur_words else cur_w + space_w + bw
+
+            if next_w <= max_w:
+                cur_words.append(word)
+                cur_w = next_w
+            else:
+                lines.append(cur_words)
+                cur_words = [word]
+                cur_w = bw
+
+        if cur_words:
+            lines.append(cur_words)
+
+        return lines
+
+    # --------------------------------------------------
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+        if t < self.start:
+            return frame
+
+        p = (t - self.start) / (self.end - self.start)
+        p = max(0.0, min(1.0, p))
+
+        total_words = len(self.words)
+        if total_words == 0:
+            return frame
+
+        active_word = min(total_words - 1, int(p * total_words))
+
+        h, w = frame.shape[:2]
+        px = self._resolve(self.x, w)
+        py = self._resolve(self.y, h)
+
+        base = Image.fromarray(frame).convert("RGBA")
+        layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+
+        # resolve max width
+        if isinstance(self.max_width, str) and self.max_width.endswith("%"):
+            max_w = int(float(self.max_width[:-1]) / 100 * w)
+        else:
+            max_w = int(self.max_width)
+
+        # precompute wrap
+        if self._lines is None:
+            self._lines = self._compute_lines(draw, max_w)
+
+        # metrics
+        bbox = draw.textbbox((0, 0), "Hg", font=self._font_base)
+        line_h = bbox[3] - bbox[1]
+        total_h = len(self._lines) * line_h + (len(self._lines) - 1) * self.line_spacing
+
+        start_y = py - total_h // 2 if self.anchor == "center" else py
+
+        word_idx = 0
+        y = start_y
+
+        for line_words in self._lines:
+            widths = [draw.textbbox((0, 0), w, font=self._font_base)[2] for w in line_words]
+            space_w = draw.textbbox((0, 0), " ", font=self._font_base)[2]
+            line_w = sum(widths) + space_w * (len(widths) - 1)
+
+            x = px - line_w // 2 if self.anchor == "center" else px
+            cx = x
+
+            for i, word in enumerate(line_words):
+                is_active = (word_idx == active_word)
+
+                # scale bounce
+                if is_active:
+                    bounce_p = ease_out_back(1.0)
+                    scale = self.scale_from + (self.scale_to - self.scale_from) * bounce_p
+                    font = ImageFont.truetype(
+                        self.font_path,
+                        int(self.font_size * scale)
+                    )
+                    color = self.active_color
+                else:
+                    font = self._font_base
+                    color = self.base_color
+
+                draw.text(
+                    (cx, y),
+                    word,
+                    font=font,
+                    fill=color + (255,)
+                )
+
+                bw = draw.textbbox((0, 0), word, font=font)[2]
+                cx += bw + space_w
+                word_idx += 1
+
+            y += line_h + self.line_spacing
+
+        out = Image.alpha_composite(base, layer)
+        return np.array(out.convert("RGB"))
+
+    # --------------------------------------------------
+
+    def _resolve(self, value, max_value):
+        if isinstance(value, str) and value.endswith("%"):
+            return int(float(value[:-1]) / 100 * max_value)
+        return int(value)
+
+
+==========================================================================================
+FILE: effects\text\text_karaoke_chunk.py
+==========================================================================================
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from engine.core.layer_base import Layer
+from utils.paths import project_path
+
+
+class KaraokeChunkTimestampEffect(Layer):
+    """
+    Karaoke subtitle CHUNK MODE (non-overlapping).
+    Menampilkan N kata sekaligus, lalu lompat ke chunk berikutnya.
+    """
+
+    def __init__(
+        self,
+        words,
+        x,
+        y,
+        chunk_size=3,
+        anchor="center",
+        font_path="assets/fonts/Montserrat-Bold.ttf",
+        font_size=42,
+        base_color=(200, 200, 200),
+        active_color=(0, 0, 0),
+        highlight_color=(255, 215, 0),
+        padding_x=10,
+        padding_y=6,
+        radius=8,
+        z_index=0,
+        enabled=True
+    ):
+        super().__init__(z_index=z_index, enabled=enabled, name="KaraokeChunk")
+
+        self.words_data = words
+        self.x = x
+        self.y = y
+        self.chunk_size = int(chunk_size)
+        self.anchor = anchor
+
+        self.font_path = project_path(font_path)
+        self.font_size = font_size
+        self._font = ImageFont.truetype(self.font_path, font_size)
+
+        self.base_color = base_color
+        self.active_color = active_color
+        self.highlight_color = highlight_color
+
+        self.padding_x = int(padding_x)
+        self.padding_y = int(padding_y)
+        self.radius = int(radius)
+
+        # Precompute chunk ranges
+        self.chunks = []
+        for i in range(0, len(words), self.chunk_size):
+            chunk = words[i:i + self.chunk_size]
+            self.chunks.append({
+                "start": chunk[0]["start"],
+                "end": chunk[-1]["end"],
+                "words": [w["word"] for w in chunk]
+            })
+
+    # --------------------------------------------------
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+
+        active_chunk = None
+        for ch in self.chunks:
+            if ch["start"] <= t <= ch["end"]:
+                active_chunk = ch
+                break
+
+        if active_chunk is None:
+            return frame
+
+        opacity = int(255 * float(context.get("opacity", 1.0)))
+
+        h, w = frame.shape[:2]
+        px = self._resolve(self.x, w)
+        py = self._resolve(self.y, h)
+
+        base = Image.fromarray(frame).convert("RGBA")
+        layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+
+        words = active_chunk["words"]
+        widths = [draw.textbbox((0, 0), w, font=self._font)[2] for w in words]
+        space_w = draw.textbbox((0, 0), " ", font=self._font)[2]
+        line_w = sum(widths) + space_w * (len(widths) - 1)
+
+        bbox = draw.textbbox((0, 0), "Hg", font=self._font)
+        line_h = bbox[3] - bbox[1]
+
+        x = px - line_w // 2 if self.anchor == "center" else px
+        y = py
+
+        cx = x
+        for i, word in enumerate(words):
+            bw = widths[i]
+
+            draw.rounded_rectangle(
+                [
+                    cx - self.padding_x,
+                    y - self.padding_y,
+                    cx + bw + self.padding_x,
+                    y + line_h + self.padding_y
+                ],
+                radius=self.radius,
+                fill=self.highlight_color + (opacity,)
+            )
+
+            draw.text(
+                (cx, y),
+                word,
+                font=self._font,
+                fill=self.active_color + (opacity,)
+            )
+
+            cx += bw + space_w
+
+        out = Image.alpha_composite(base, layer)
+        return np.array(out.convert("RGB"))
+
+    # --------------------------------------------------
+
+    def _resolve(self, value, max_value):
+        if isinstance(value, str) and value.endswith("%"):
+            return int(float(value[:-1]) / 100 * max_value)
+        return int(value)
+
+
+==========================================================================================
+FILE: effects\transform\move.py
+==========================================================================================
+from engine.layer_base import Layer
+from effects.easing import EASING_MAP
+
+class MoveEffect(Layer):
+    def __init__(self, from_x, from_y, to_x, to_y, start, end, easing="linear", enabled=True):
+        super().__init__(z_index=0, enabled=enabled, name="MoveEffect")
+
+        self.fx = float(from_x); self.fy = float(from_y)
+        self.tx = float(to_x);   self.ty = float(to_y)
+        self.start = float(start); self.end = float(end)
+        self.easing = EASING_MAP.get(easing, EASING_MAP["linear"])
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+
+        if t <= self.start:
+            p = 0.0
+        elif t >= self.end:
+            p = 1.0
+        else:
+            p = (t - self.start) / (self.end - self.start)
+
+        p = self.easing(p)
+
+        context["x"] = int(self.fx + (self.tx - self.fx) * p)
+        context["y"] = int(self.fy + (self.ty - self.fy) * p)
+
+        return frame
+
+
+==========================================================================================
+FILE: effects\transform\rotate_anim.py
+==========================================================================================
+from engine.layer_base import Layer
+from effects.easing import EASING_MAP
+
+class RotateAnimEffect(Layer):
+    def __init__(self, start, end, from_angle, to_angle, easing="ease_out", enabled=True):
+        super().__init__(z_index=0, enabled=enabled, name="RotateAnim")
+
+        self.start = float(start)
+        self.end = float(end)
+        self.from_angle = float(from_angle)
+        self.to_angle = float(to_angle)
+        self.easing_fn = EASING_MAP.get(easing, EASING_MAP["linear"])
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+
+        if t < self.start:
+            context["rotate"] = self.from_angle
+            return frame
+
+        if t > self.end:
+            context["rotate"] = self.to_angle
+            return frame
+
+        p = (t - self.start) / (self.end - self.start)
+        p = max(0.0, min(1.0, p))
+        p = self.easing_fn(p)
+
+        context["rotate"] = self.from_angle + (self.to_angle - self.from_angle) * p
+        return frame
+
+
+==========================================================================================
+FILE: effects\transform\scale.py
+==========================================================================================
+from effects.easing import EASING_MAP
+
+class ScaleEffect:
+    def __init__(self, from_scale, to_scale, start, end, easing="linear"):
+        self.from_scale = float(from_scale)
+        self.to_scale = float(to_scale)
+        self.start = float(start)
+        self.end = float(end)
+        self.easing = EASING_MAP.get(easing, EASING_MAP["linear"])
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+
+        # ⛔ DI LUAR WINDOW → JANGAN SENTUH CONTEXT
+        if t < self.start or t > self.end:
+            return frame
+
+        # hitung progress
+        p = (t - self.start) / (self.end - self.start)
+        p = max(0.0, min(1.0, p))
+        p = self.easing(p)
+
+        scale = self.from_scale + (self.to_scale - self.from_scale) * p
+
+        # tulis hanya saat aktif
+        context["scale"] = max(0.01, scale)
+        return frame
+
+
+==========================================================================================
+FILE: effects\transform\scale_popup.py
+==========================================================================================
+from effects.easing import EASING_MAP
+
+class ScalePopupEffect:
+    def __init__(
+        self,
+        start,
+        end,
+        from_scale=0.05,
+        to_scale=1.0,
+        easing="ease_out_back"
+    ):
+        self.start = float(start)
+        self.end = float(end)
+        self.from_scale = float(from_scale)
+        self.to_scale = float(to_scale)
+        self.easing_fn = EASING_MAP.get(easing, EASING_MAP["linear"])
+
+    def apply(self, frame, frame_index, fps, context):
+        t = frame_index / fps
+
+        if t < self.start:
+            context["scale"] = self.from_scale
+            return frame
+
+        if t > self.end:
+            context["scale"] = self.to_scale
+            return frame
+
+        # progress linear
+        p = (t - self.start) / (self.end - self.start)
+        p = max(0.0, min(1.0, p))
+
+        # ✨ easing applied here
+        p = self.easing_fn(p)
+
+        scale = self.from_scale + (self.to_scale - self.from_scale) * p
+        context["scale"] = scale
+        return frame
+
+
+==========================================================================================
+FILE: effects\utils\easing.py
+==========================================================================================
+import math
+
+def linear(p):
+    return p
+
+def ease_out(p):
+    return 1 - (1 - p) * (1 - p)
+
+def ease_in(p):
+    return p * p
+
+def ease_in_out(p):
+    if p < 0.5:
+        return 2 * p * p
+    return 1 - pow(-2 * p + 2, 2) / 2
+
+def ease_out_back(p):
+    c1 = 1.70158
+    c3 = c1 + 1
+    return 1 + c3 * pow(p - 1, 3) + c1 * pow(p - 1, 2)
+
+EASING_MAP = {
+    "linear": linear,
+    "ease_in": ease_in,
+    "ease_out": ease_out,
+    "ease_in_out": ease_in_out,
+    "ease_out_back": ease_out_back,
+}
+
+
+def ease_value(start, end, t, easing="linear"):
+    """Return an eased value between start and end for normalized t [0..1].
+
+    Clips t to [0,1], looks up the easing function from EASING_MAP (defaults to
+    linear), and interpolates between start and end.
+    """
+    t = max(0.0, min(1.0, t))
+    func = EASING_MAP.get(easing, linear)
+    return start + (end - start) * func(t)
+
+
+==========================================================================================
+FILE: engine\mamen_engine.py
+==========================================================================================
+# engine/mamen_engine.py
+from engine.decoding.pyav_engine import PyAVClip
+
+class MamenEngine:
+    def __init__(self):
+        self.clips = []
+        self.video_sources = {}
+        self.fps = 30
+        self._last_clip_state = {}
+
+    def sync_clips(self, gui_clips):
+        self.clips.clear()
+        new_state = {}
+        for item in gui_clips:
+            if not item.file_path: continue
+            clip = {
+                "file": item.file_path,
+                "start": item.start_sec,
+                "dur": item.dur_sec,
+                "track": item.track_index,
+                "media_start": getattr(item, "media_start_offset", 0.0)
+            }
+            self.clips.append(clip)
+            
+            sig = self._make_signature(clip)
+            new_state[item.file_path] = sig
+
+            # Invalidate cache jika ada perubahan posisi/durasi
+            if item.file_path not in self.video_sources:
+                try:
+                    self.video_sources[item.file_path] = PyAVClip(item.file_path, fps=self.fps)
+                except Exception as e:
+                    print(f"❌ Gagal memuat klip {item.file_path}: {e}")
+                    # Jangan masukkan ke video_sources jika gagal
+                    continue
+
+        self._last_clip_state = new_state
+
+    def get_frame_at(self, t):
+        active = None
+        # Cari clip di track tertinggi yang aktif pada waktu t
+        for clip in sorted(self.clips, key=lambda c: c["track"], reverse=True):
+            if clip["start"] <= t < clip["start"] + clip["dur"]:
+                active = clip
+                break
+        
+        if not active: return None
+        src = self.video_sources.get(active["file"])
+        if not src: return None
+
+        local_t = t - active["start"] + active["media_start"]
+        src.prefetch(local_t, duration=0.8) # Menggunakan prefetch dari file pyav_engine.py Anda
+        return src.get_frame_at(local_t)
+
+    def _make_signature(self, clip):
+        return (round(clip["start"], 4), round(clip["dur"], 4), 
+                round(clip["media_start"], 4), clip["track"])
+
+==========================================================================================
+FILE: engine\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: engine\builders\beat_sync.py
+==========================================================================================
+
+from engine.clip import Clip
+from engine.transitions.crossfade import CrossFadeTransition
+from engine.speed_ramp import SpeedRamp
+
+
+def build_beat_clips(
+    video_path,
+    beats,
+    clip_length=1.0
+):
+    """
+    Potong video mengikuti beat
+    """
+    clips = []
+    tline = 0.0
+
+    for b in beats:
+        clip = Clip(
+            source=video_path,
+            timeline_start=tline,
+            in_time=b,
+            out_time=b + clip_length
+        )
+        clips.append(clip)
+        tline += clip.duration
+
+    return clips
+
+
+def build_beat_transitions(clips, duration=0.15):
+    """
+    Tambahkan transition di setiap beat
+    """
+    for i in range(1, len(clips)):
+        clips[i].timeline_start -= duration
+        clips[i].set_transition(
+            CrossFadeTransition(duration)
+        )
+
+
+def build_beat_speed_ramp(
+    clip,
+    slow=0.6,
+    fast=1.8,
+    window=0.2
+):
+    """
+    Speed ramp di sekitar beat
+    """
+    ramp = SpeedRamp(
+        points=[
+            (0.0, slow),
+            (window, fast),
+            (window * 2, slow),
+        ],
+        easing="ease_in_out"
+    )
+    clip.speed_ramp = ramp
+
+
+==========================================================================================
+FILE: engine\builders\jump_cut_builder.py
+==========================================================================================
+
+from engine.clip import Clip
+
+
+def build_jumpcut_clips(
+    source_video,
+    silence_segments,
+    min_keep_duration=0.2
+):
+    """
+    Convert silence segments → talking clips
+    """
+    clips = []
+
+    last_end = 0.0
+    timeline_cursor = 0.0
+
+    for sil_start, sil_end in silence_segments:
+        keep_dur = sil_start - last_end
+        if keep_dur >= min_keep_duration:
+            clip = Clip(
+                source=source_video,
+                timeline_start=timeline_cursor,
+                in_time=last_end,
+                out_time=sil_start
+            )
+            clips.append(clip)
+            timeline_cursor += clip.duration
+
+        last_end = sil_end
+
+    return clips
+
+
+==========================================================================================
+FILE: engine\builders\transition_presets.py
+==========================================================================================
+
+import random
+
+from engine.transitions.crossfade import CrossFadeTransition
+from engine.transitions.slide import SlideTransition
+from engine.transitions.zoom import ZoomTransition
+from engine.transitions.flash import FlashTransition
+from engine.transitions.shake import ShakeTransition
+from engine.transitions.glitch import GlitchTransition
+
+
+def choose_transition(
+    beat_interval,
+    base_duration=0.3
+):
+    """
+    Pilih transition berdasarkan jarak beat (detik)
+    """
+
+    # beat sangat rapat → glitch
+    if beat_interval < 0.25:
+        return GlitchTransition(
+            duration=base_duration,
+            strength=15
+        )
+
+    # beat rapat → flash / shake
+    if beat_interval < 0.4:
+        return random.choice([
+            FlashTransition(base_duration, strength=1.0),
+            ShakeTransition(base_duration, strength=12)
+        ])
+
+    # beat sedang → slide
+    if beat_interval < 0.7:
+        return SlideTransition(
+            duration=base_duration,
+            direction=random.choice(["left", "right"])
+        )
+
+    # beat jarang → cinematic
+    return random.choice([
+        CrossFadeTransition(base_duration),
+        ZoomTransition(base_duration, mode="in"),
+        ZoomTransition(base_duration, mode="out")
+    ])
+
+
+def apply_transition_presets(
+    clips,
+    beats,
+    default_duration=0.3
+):
+    """
+    Assign transition otomatis ke clip berdasarkan beat
+    """
+    for i in range(1, len(clips)):
+        if i >= len(beats):
+            continue
+
+        interval = beats[i] - beats[i - 1]
+
+        tr = choose_transition(
+            beat_interval=interval,
+            base_duration=default_duration
+        )
+
+        # overlap clip
+        clips[i].timeline_start -= tr.duration
+        clips[i].set_transition(tr)
+
+
+==========================================================================================
+FILE: engine\commands\manager.py
+==========================================================================================
+
+class CommandManager:
+    def execute(self, command):
+        pass
+
+command_manager = CommandManager()
+
+==========================================================================================
+FILE: engine\commands\transform_cmd.py
+==========================================================================================
+class MoveLayerCommand:
+    def __init__(self, layer, old_pos, new_pos):
+        self.layer = layer
+        self.old_pos = old_pos
+        self.new_pos = new_pos
+
+    def execute(self):
+        self.layer.setPos(self.new_pos)
+
+    def undo(self):
+        self.layer.setPos(self.old_pos)
+
+class ScaleLayerCommand:
+    def __init__(self, layer, old_scale, new_scale):
+        self.layer = layer
+        self.old_scale = old_scale
+        self.new_scale = new_scale
+
+    def execute(self):
+        # Logika eksekusi skala
+        pass
+
+    def undo(self):
+        # Logika undo skala
+        pass
+
+==========================================================================================
+FILE: engine\core\clip.py
+==========================================================================================
+
+class Clip:
+    def __init__(self, source, timeline_start=0, in_time=0, out_time=None, transition=None):
+        """
+        Args:
+            source (str): Path ke file video/gambar.
+            timeline_start (float): Waktu mulai di timeline (detik).
+            in_time (float): Titik potong awal dari video sumber (detik).
+            out_time (float): Titik potong akhir dari video sumber (detik).
+            transition (Transition): Objek transisi (Fade, Glitch, dll).
+        """
+        self.source = source
+        self.timeline_start = float(timeline_start)
+        self.in_time = float(in_time)
+        
+        # Jika out_time tidak diisi, kita anggap 0 dulu (nanti bisa diupdate saat load reader)
+        # Tapi untuk demo main.py kita sudah isi manual, jadi aman.
+        self.out_time = float(out_time) if out_time is not None else 0.0
+        
+        # --- FITUR BARU: TRANSISI ---
+        self.transition = transition 
+
+    @property
+    def duration(self):
+        """Durasi klip dalam detik (berdasarkan potongan in/out)"""
+        if self.out_time > self.in_time:
+            return self.out_time - self.in_time
+        return 0.0
+
+    @property
+    def timeline_end(self):
+        """Waktu selesai di timeline"""
+        return self.timeline_start + self.duration
+
+    def map_time(self, timeline_t):
+        """
+        Mengubah waktu Timeline (Global) menjadi waktu Video Source (Lokal).
+        Misal: Timeline detik ke-5, tapi klip ini baru mulai di detik 2, 
+        maka source time = in_time + (5 - 2) = in_time + 3.
+        """
+        offset = timeline_t - self.timeline_start
+        return self.in_time + offset
+
+==========================================================================================
+FILE: engine\core\context_spec.py
+==========================================================================================
+def create_context(base_frame):
+    return {
+        "base_frame": base_frame,
+        "opacity": 1.0,
+        "overlay_frame": None,
+        "adaptive_text_color": None,
+    }
+
+
+==========================================================================================
+FILE: engine\core\context_utils.py
+==========================================================================================
+
+def resolve_transform(context):
+    tr = context.get("transform", {})
+    return {
+        "scale": tr.get("scale", 1.0),
+        "rotate": tr.get("rotate", 0.0),
+        "opacity": tr.get("opacity", 1.0)
+    }
+
+
+==========================================================================================
+FILE: engine\core\effect_guard.py
+==========================================================================================
+def apply_effect(effect, frame, t, fps, context):
+    start = getattr(effect, "start", None)
+    end = getattr(effect, "end", None)
+
+    if start is not None and t < start:
+        return frame
+    if end is not None and t > end:
+        return frame
+
+    try:
+        return effect.apply(frame, int(t*fps), fps, context)
+    except TypeError:
+        return effect.apply(frame, int(t*fps), fps)
+
+
+==========================================================================================
+FILE: engine\core\effect_runner.py
+==========================================================================================
+
+def run_effects(frame, frame_index, fps, effects):
+    """
+    Universal effect runner
+    - auto skip effect tidak aktif
+    - pisahkan context & frame effect
+    - cegah tumpang tindih
+    """
+
+    t = frame_index / fps
+    context = {
+        "transform": {}
+    }
+
+    # Reset per-frame shared defaults to avoid leakage between frames
+    context["opacity"] = 1.0
+
+    # ==========================
+    # PASS 1: CONTEXT EFFECT
+    # ==========================
+    for eff in effects:
+        start = getattr(eff, "start", None)
+        end = getattr(eff, "end", None)
+
+        if start is not None and t < start:
+            continue
+        if end is not None and t > end:
+            continue
+
+        # effect yg TIDAK return frame → context only
+        try:
+            result = eff.apply(frame, frame_index, fps, context)
+        except TypeError:
+            # legacy effect (tanpa context)
+            result = eff.apply(frame, frame_index, fps)
+
+        # kalau effect mengembalikan frame → simpan nanti
+        if result is not frame:
+            context.setdefault("_frame_effects", []).append(eff)
+
+    # ==========================
+    # PASS 2: FRAME EFFECT
+    # ==========================
+    for eff in context.get("_frame_effects", []):
+        try:
+            frame = eff.apply(frame, frame_index, fps, context)
+        except TypeError:
+            frame = eff.apply(frame, frame_index, fps)
+
+    return frame
+
+
+==========================================================================================
+FILE: engine\core\layer_base.py
+==========================================================================================
+class Transform:
+    def __init__(self):
+        self.x = 0
+        self.y = 0
+        self.scale = 1.0
+        self.rotation = 0.0
+
+
+class Layer:
+    def __init__(self, z_index=0, enabled=True, name=None):
+        self.z_index = z_index
+        self.enabled = enabled
+        self.name = name or self.__class__.__name__
+        self.transform = Transform()
+
+
+==========================================================================================
+FILE: engine\core\pipeline.py
+==========================================================================================
+import cv2
+import numpy as np
+
+# ============================================================
+# Helper: transform clip ke posisi/rotasi di canvas
+# ============================================================
+def apply_transform(base_frame, clip_frame, clip_data):
+    """
+    FIX: Menggunakan getattr agar tidak AttributeError jika data kurang lengkap
+    """
+    h_base, w_base = base_frame.shape[:2]
+
+    # Ambil data dengan nilai aman jika atribut tidak ditemukan
+    c_width  = getattr(clip_data, 'width', w_base)
+    c_height = getattr(clip_data, 'height', h_base)
+    c_scale  = getattr(clip_data, 'scale', 1.0)
+    c_rot    = getattr(clip_data, 'rotation', 0)
+    c_x      = getattr(clip_data, 'x', w_base / 2)
+    c_y      = getattr(clip_data, 'y', h_base / 2)
+
+    # 1. Resize clip_frame sesuai ukuran kotak di UI
+    ch = int(c_height * c_scale)
+    cw = int(c_width * c_scale)
+    
+    if ch <= 0 or cw <= 0:
+        return base_frame
+
+    clip_res = cv2.resize(clip_frame, (cw, ch))
+
+    # 2. Buat matrix rotasi & posisi
+    center = (cw // 2, ch // 2)
+    M = cv2.getRotationMatrix2D(center, c_rot, 1.0)
+
+    # Geser ke posisi di canvas
+    M[0, 2] += c_x - center[0]
+    M[1, 2] += c_y - center[1]
+    
+    # ... (Sisa kode warping dan blending tetap sama)
+
+    # 3. Transform ke kanvas ukuran base_frame
+    transformed = cv2.warpAffine(
+        clip_res,
+        M,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_TRANSPARENT
+    )
+
+    # 4. Blending alpha (kalau clip punya channel alpha)
+    # ------------------------------------------------
+    # Jika clip_res punya 4 channel (BGRA), pakai alpha-nya.
+    if transformed.shape[2] == 4:
+        # Pisah BGR dan A
+        b, g, r, a = cv2.split(transformed)
+        overlay_rgb = cv2.merge((b, g, r))
+
+        alpha = a.astype(float) / 255.0
+        alpha = alpha[:, :, np.newaxis]  # (H, W, 1)
+
+        base = base_frame.astype(float)
+        overlay = overlay_rgb.astype(float)
+
+        out = cv2.multiply(alpha, overlay) + cv2.multiply(1.0 - alpha, base)
+        out = out.astype(np.uint8)
+        return out
+    else:
+        # Kalau tidak ada alpha, pakai addWeighted sederhana (full opacity)
+        out = base_frame.copy()
+        mask = cv2.cvtColor(transformed, cv2.COLOR_BGR2GRAY)
+        _, mask_bin = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+
+        # Tempatkan only on non-zero mask
+        roi = out
+        overlay = transformed
+
+        # Buat 3-channel mask
+        mask_3 = cv2.merge([mask_bin, mask_bin, mask_bin])
+
+        # Area background yang tidak tertutupi overlay
+        bg = cv2.bitwise_and(roi, cv2.bitwise_not(mask_3))
+        fg = cv2.bitwise_and(overlay, mask_3)
+
+        out = cv2.add(bg, fg)
+        return out
+
+
+# ============================================================
+# FINAL FAST RENDER PIPELINE (STABLE)
+# ============================================================
+# - Tidak rebuild layer tiap frame
+# - Skip layer tidak aktif
+# - Context konsisten dan di-reset setiap frame
+# - Cocok untuk preview & export
+# ============================================================
+
+class RenderPipeline:
+    def __init__(self, fps: int):
+        self.fps = fps
+        self.layers = []
+        self.context = {}
+
+    # --------------------------------------------------------
+    # Layer Management
+    # --------------------------------------------------------
+    def add_layer(self, layer):
+        self.layers.append(layer)
+        # jaga urutan Z (kalau ada)
+        self.layers.sort(
+            key=lambda l: getattr(l, "z_index", 0)
+        )
+
+    def clear_layers(self):
+        self.layers.clear()
+
+    # --------------------------------------------------------
+    # MAIN RENDER
+    # --------------------------------------------------------
+    def process_frame(self, base_frame, frame_index: int):
+        """
+        base_frame : numpy array (H, W, 3)
+        frame_index: int
+        """
+
+        # ===== RESET CONTEXT PER FRAME (WAJIB) =====
+        # Membersihkan semua state dari frame sebelumnya
+        context = self.context
+        context.clear()
+        context["opacity"] = 1.0
+        context["overlay_frame"] = None
+        context["base_frame"] = base_frame.copy()
+        context.pop("force_bgra", None)
+        context.pop("force_bgr", None)
+        # ============================================
+
+        out = base_frame.copy()
+
+        for layer in self.layers:
+
+            # Skip kalau punya is_active dan lagi tidak aktif
+            if hasattr(layer, "is_active"):
+                if not layer.is_active(frame_index, self.fps):
+                    continue
+
+            try:
+                # Kalau layer punya data posisi/skala/rotasi & frame,
+                # bisa langsung manfaatkan apply_transform di sini.
+                if hasattr(layer, "clip_frame") and hasattr(layer, "clip_data"):
+                    out = apply_transform(out, layer.clip_frame, layer.clip_data)
+                else:
+                    # fallback ke API lama: layer.apply(...)
+                    out = layer.apply(
+                        out,
+                        frame_index,
+                        self.fps,
+                        context
+                    )
+            except Exception as e:
+                print(
+                    f"[RenderPipeline] Layer error "
+                    f"{layer.__class__.__name__}: {e}"
+                )
+                continue
+
+        # Clear overlay setelah semua layer selesai
+        context["overlay_frame"] = None
+
+        return out
+
+
+==========================================================================================
+FILE: engine\core\timeline.py
+==========================================================================================
+import cv2
+import numpy as np
+# Pastikan import Track benar (sesuaikan dengan struktur folder Anda)
+# Jika error, coba: from engine.core.track import Track
+from .track import Track 
+
+class Timeline:
+    def __init__(self):
+        self.tracks = [] 
+
+    @property
+    def duration(self):
+        max_duration = 0
+        for track in self.tracks:
+            for clip in track.clips:
+                if clip.timeline_end > max_duration:
+                    max_duration = clip.timeline_end
+        return max(max_duration, 5.0)
+
+    def add_track(self, track: Track):
+        self.tracks.append(track)
+        self.tracks.sort(key=lambda t: t.z_index)
+
+    def get_track_by_name(self, name):
+        for t in self.tracks:
+            if t.name == name: return t
+        return None
+
+    def get_frame(self, timeline_t, canvas_size=(720, 1280)):
+        h, w = canvas_size
+
+        # === BASE CANVAS (WAJIB ADA) ===
+        base_frame = np.zeros((h, w, 4), dtype=np.uint8)
+
+        for track in self.tracks:
+            track_frame = track.get_frame(timeline_t, canvas_size)
+            if track_frame is None:
+                continue
+
+            # pastikan ukuran sama
+            if track_frame.shape[:2] != (h, w):
+                track_frame = cv2.resize(track_frame, (w, h))
+
+            # === ALPHA BLENDING BENAR ===
+            alpha = track_frame[:, :, 3:4].astype(np.float32) / 255.0
+            inv_alpha = 1.0 - alpha
+
+            base_frame[:, :, :3] = (
+                track_frame[:, :, :3] * alpha +
+                base_frame[:, :, :3] * inv_alpha
+            ).astype(np.uint8)
+
+            base_frame[:, :, 3] = 255
+
+        return base_frame
+
+
+    def release(self):
+        for t in self.tracks:
+            t.release()
+            
+    def has_clips(self):
+        for track in self.tracks:
+            if track.clips:
+                return True
+        return False
+    
+    def get_duration(self):
+        d = 0
+        for track in self.tracks:
+            for clip in track.clips:
+                d = max(d, clip.start + clip.duration)
+        return d
+
+
+==========================================================================================
+FILE: engine\core\track.py
+==========================================================================================
+import cv2
+import numpy as np
+import os
+from ..decoding.clip_reader import ClipReader
+# Import helper transform agar hasil render sama persis dengan preview UI
+from engine.core.pipeline import apply_transform 
+
+class Track:
+    def __init__(self, name, z_index=0):
+        self.name = name
+        self.z_index = z_index
+        self.clips = []
+        self._readers = {} 
+        self._image_cache = {} 
+
+    def add_clip(self, clip):
+        """Menambahkan klip ke track dan sortir berdasarkan waktu mulai"""
+        self.clips.append(clip)
+        self.clips.sort(key=lambda c: c.timeline_start)
+
+    def get_frame(self, timeline_time, canvas_size=(720, 1280)):
+        """Fungsi Utama: Mengambil frame dan menerapkan posisi/skala/rotasi"""
+        active_clips = [c for c in self.clips if c.timeline_start <= timeline_time < c.timeline_end]
+        if not active_clips: 
+            return None
+
+        # Buat kanvas transparan seukuran resolusi render
+        h, w = canvas_size
+        track_canvas = np.zeros((h, w, 4), dtype=np.uint8)
+
+        for clip in active_clips:
+            # FIX: Definisikan 'ext' sebelum digunakan di baris bawahnya
+            ext = os.path.splitext(clip.source)[1].lower() 
+            frame = None
+
+            # 1. LOGIKA GAMBAR (PNG/JPG)
+            if ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                if clip.source not in self._image_cache:
+                    img = cv2.imread(clip.source, cv2.IMREAD_UNCHANGED)
+                    if img is not None:
+                        if img.shape[2] == 3:
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+                        self._image_cache[clip.source] = img
+                frame = self._image_cache.get(clip.source)
+            
+            # 2. LOGIKA VIDEO
+            else:
+                if clip.source not in self._readers:
+                    self._readers[clip.source] = ClipReader(clip.source)
+                t_source = clip.map_time(timeline_time)
+                frame = self._readers[clip.source].get_frame(t_source)
+
+            if frame is None: 
+                continue
+
+            # 3. PASTIKAN BGRA (4 Channel)
+            if frame.shape[2] == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+
+            # 4. TERAPKAN TRANSFORMASI (Posisi, Skala, Rotasi)
+            # Ini yang bikin hasil render sama dengan apa yang lu liat di Preview UI
+            track_canvas = apply_transform(track_canvas, frame, clip)
+
+        return track_canvas
+
+    def release(self):
+        """Bersihkan memori setelah render selesai"""
+        for reader in self._readers.values():
+            reader.release()
+        self._readers = {}
+        self._image_cache = {}
+
+==========================================================================================
+FILE: engine\core\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: engine\decoding\clip_reader.py
+==========================================================================================
+import cv2
+
+class ClipReader:
+    def __init__(self, path):
+        self.path = path
+        self.cap = cv2.VideoCapture(path)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Gagal membuka video: {path}")
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.last_idx = -1 
+
+    def get_frame(self, t):
+        frame_index = int(t * self.fps)
+        
+        # JIKA frame berurutan, langsung read() tanpa set() (SANGAT CEPAT)
+        if frame_index == self.last_idx + 1:
+            ok, frame = self.cap.read()
+        else:
+            # Hanya gunakan .set() jika melompat (Scrubbing UI)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = self.cap.read()
+
+        if not ok:
+            return None
+
+        self.last_idx = frame_index
+        return frame
+
+    def release(self):
+        if self.cap:
+            self.cap.release()
+
+==========================================================================================
+FILE: engine\decoding\frame_cache.py
+==========================================================================================
+
+from collections import OrderedDict
+
+
+class FrameCache:
+    """
+    Cache frame berbasis waktu (detik)
+    LRU + windowed
+    """
+    def __init__(self, max_frames=120):
+        self.max_frames = max_frames
+        self.cache = OrderedDict()
+
+    def get(self, t):
+        key = round(t, 3)
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return None
+
+    def put(self, t, frame):
+        key = round(t, 3)
+        self.cache[key] = frame
+        self.cache.move_to_end(key)
+
+        if len(self.cache) > self.max_frames:
+            self.cache.popitem(last=False)
+
+    def clear(self):
+        self.cache.clear()
+
+
+==========================================================================================
+FILE: engine\decoding\pyav_engine.py
+==========================================================================================
+
+import av
+from engine.decoding.frame_cache import FrameCache
+
+
+class PyAVClip:
+    def __init__(self, path, fps=30):
+        self.container = av.open(path)
+        
+        # PERBAIKAN: Cek apakah ada stream video
+        if len(self.container.streams.video) == 0:
+            raise ValueError(f"File tidak memiliki stream video: {path}")
+        
+        self.stream = self.container.streams.video[0]
+        self.stream.thread_type = "AUTO"
+        self.time_base = float(self.stream.time_base)
+
+        self.fps = fps
+        self.cache = FrameCache(max_frames=180)
+
+    def _decode_frame(self, t):
+        pts = int(t / self.time_base)
+        self.container.seek(
+            pts,
+            stream=self.stream,
+            any_frame=False,
+            backward=True
+        )
+
+        for frame in self.container.decode(self.stream):
+            ft = frame.pts * self.time_base
+            if ft >= t:
+                return frame.to_ndarray(format="rgb24")
+        return None
+
+    def get_frame_at(self, t):
+        cached = self.cache.get(t)
+        if cached is not None:
+            return cached
+
+        frame = self._decode_frame(t)
+        if frame is not None:
+            self.cache.put(t, frame)
+
+        return frame
+
+    def prefetch(self, start_t, duration=1.0):
+        """
+        Prefetch frame ke depan (1 detik default)
+        """
+        step = 1.0 / self.fps
+        t = start_t
+
+        for _ in range(int(duration * self.fps)):
+            if self.cache.get(t) is None:
+                frame = self._decode_frame(t)
+                if frame is not None:
+                    self.cache.put(t, frame)
+            t += step
+
+
+==========================================================================================
+FILE: engine\decoding\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: engine\interaction\controller.py
+==========================================================================================
+import math
+import cv2
+import numpy as np
+from engine.commands.manager import command_manager
+from engine.commands.transform_cmd import MoveLayerCommand, ScaleLayerCommand
+from engine.interaction.snapping import SnappingController
+
+# Helper: Rotasi titik (x,y) mengelilingi (cx,cy)
+def rotate_point(x, y, cx, cy, angle_deg):
+    # Sama, tambahkan MINUS agar sinkron dengan visual
+    rad = math.radians(-angle_deg) 
+    
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    ox, oy = x - cx, y - cy
+    rx = ox * cos_a - oy * sin_a
+    ry = ox * sin_a + oy * cos_a
+    return rx + cx, ry + cy
+# -------------------------
+
+class InteractionController:
+    def __init__(self, layer_stack, canvas_width=1920, canvas_height=1080):
+        self.layer_stack = layer_stack
+        # Init snapper and active guides for GUI overlay
+        self.snapper = SnappingController(canvas_width, canvas_height)
+        self.active_guides = []
+        
+        self.selected_layer = None
+        self.active_layer = None
+        self.active_handle = None
+        self.mode = None
+
+        # State
+        self.last_mouse = None
+        self.start_center = None
+        self.start_dist = None
+        self.start_scale = None
+        self.start_dims = None
+        self.start_rotation = 0
+        self.start_angle_mouse = 0
+
+    # ------------------------------------------------------------------
+    # HELPER LOGIC: HIT TEST TERHADAP OBB (Oriented Bounding Box)
+    # ------------------------------------------------------------------
+    def _get_layer_obb_params(self, layer):
+        """Mengambil parameter bbox asli dan rotasinya"""
+        if not hasattr(layer, "get_bbox"): return None
+        
+        # Bbox unrotated (local axis)
+        bbox = layer.get_bbox() # (x, y, w, h) Top-Left Unrotated
+        if not bbox: return None
+        
+        rotation = getattr(layer.transform, "rotation", 0)
+        
+        bx, by, bw, bh = bbox
+        cx = bx + bw / 2
+        cy = by + bh / 2
+        
+        return (bx, by, bw, bh, cx, cy, rotation)
+
+    def _hit_test_handles(self, mouse_x, mouse_y, params):
+        """Cek apakah mouse mengenai handle yang sudah diputar"""
+        bx, by, bw, bh, cx, cy, rotation = params
+        
+        # Definisi posisi handle relatif terhadap (bx, by) sebelum rotasi
+        # Format: (name, local_x, local_y)
+        # Kita pakai 4 sudut + 4 sisi + 1 rotasi
+        handle_defs = {
+            "top_left":     (bx, by),
+            "top_right":    (bx + bw, by),
+            "bottom_right": (bx + bw, by + bh),
+            "bottom_left":  (bx, by + bh),
+            # "top":          (bx + bw/2, by),      # Opsional
+            # "bottom":       (bx + bw/2, by + bh), # Opsional
+            "rotate":       (bx + bw/2, by - 30)  # Handle Rotasi di atas
+        }
+        
+        hit_radius = 15 # Radius toleransi klik
+        
+        for name, (lx, ly) in handle_defs.items():
+            # Putar posisi handle ini sesuai rotasi objek
+            wx, wy = rotate_point(lx, ly, cx, cy, rotation)
+            
+            # Cek jarak mouse ke handle dunia nyata ini
+            dist = math.hypot(mouse_x - wx, mouse_y - wy)
+            if dist <= hit_radius:
+                return name
+                
+        return None
+
+    def _hit_test_body(self, mouse_x, mouse_y, params):
+        """Cek apakah mouse ada di dalam kotak miring"""
+        bx, by, bw, bh, cx, cy, rotation = params
+        
+        # Trik Matematika:
+        # Daripada pusing cek point-in-polygon, kita PUTAR BALIK mouse-nya
+        # berlawanan arah rotasi objek. Lalu cek apakah mouse masuk kotak lurus.
+        
+        # Putar mouse -angle terhadap center objek
+        local_mx, local_my = rotate_point(mouse_x, mouse_y, cx, cy, -rotation)
+        
+        # Cek AABB standar
+        if (bx <= local_mx <= bx + bw) and (by <= local_my <= by + bh):
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # MOUSE EVENTS
+    # ------------------------------------------------------------------
+
+    def on_mouse_down(self, x, y):
+        # 1. Prioritas: Cek Handle pada Selected Layer
+        if self.selected_layer:
+            params = self._get_layer_obb_params(self.selected_layer)
+            if params:
+                handle_name = self._hit_test_handles(x, y, params)
+                if handle_name:
+                    self.active_layer = self.selected_layer
+                    
+                    if handle_name == "rotate":
+                        self.mode = "rotate"
+                        bx, by, bw, bh, cx, cy, rot = params
+                        self.start_rotation = rot
+                        self.start_angle_mouse = math.degrees(math.atan2(y - cy, x - cx))
+                    else:
+                        self.mode = "resize"
+                        self.active_handle = handle_name
+                        bx, by, bw, bh, cx, cy, rot = params
+                        self.start_center = (cx, cy)
+                        self.start_scale = self.selected_layer.transform.scale
+                        self.start_dims = (bw, bh)
+                        self.start_dist = math.hypot(x - cx, y - cy)
+                    
+                    # [UNDO SYSTEM] Snapshot State Awal (Handle Click)
+                    self._snapshot_undo_state()
+                    return
+
+        # 2. Cek Body (Seleksi Layer Baru/Lama)
+        clicked_layer = None
+        for layer in reversed(self.layer_stack.layers):
+            params = self._get_layer_obb_params(layer)
+            if not params: continue
+            
+            if self._hit_test_body(x, y, params):
+                clicked_layer = layer
+                break
+        
+        if clicked_layer:
+            self.selected_layer = clicked_layer
+            self.active_layer = clicked_layer
+            self.mode = "move"
+            self.last_mouse = (x, y)
+            
+            # [UNDO SYSTEM] Snapshot State Awal (Body Click)
+            self._snapshot_undo_state()
+        else:
+            self.selected_layer = None
+            self.mode = None
+
+
+        
+        
+    def on_mouse_move(self, x, y):
+        if not self.active_layer: return
+        t = self.active_layer.transform
+        # Reset active guides each move
+        self.active_guides = []
+
+        if self.mode == "move":
+            if self.last_mouse:
+                dx = x - self.last_mouse[0]
+                dy = y - self.last_mouse[1]
+
+                # 1. Calculate raw candidate position
+                raw_x = t.x + dx
+                raw_y = t.y + dy
+
+                # 2. Get layer size for snapping
+                bbox = self.active_layer.get_bbox()
+                if bbox:
+                    _, _, w, h = bbox
+
+                    # 3. Perform snapping
+                    snap_x, snap_y, guides = self.snapper.snap(raw_x, raw_y, w, h)
+
+                    # 4. Apply snapped position and store guides
+                    t.x = snap_x
+                    t.y = snap_y
+                    self.active_guides = guides
+                else:
+                    # Fallback if no bbox
+                    t.x = raw_x
+                    t.y = raw_y
+
+            self.last_mouse = (x, y)
+
+        elif self.mode == "rotate":
+            bbox = self.active_layer.get_bbox()
+            if bbox:
+                # Hitung center on-the-fly untuk pivot
+                bx, by, bw, bh = bbox
+                cx = bx + bw/2
+                cy = by + bh/2
+                
+                # Sudut mouse saat ini
+                curr_angle = math.degrees(math.atan2(y - cy, x - cx))
+                
+                # Hitung selisih pergerakan mouse
+                delta = curr_angle - self.start_angle_mouse
+                
+                # --- FIX 1: Wrapping Sudut (Opsional tapi Bagus) ---
+                # Mencegah lompatan nilai saat melewati garis -180/180 derajat (jam 9)
+                if delta > 180: delta -= 360
+                elif delta < -180: delta += 360
+
+                # --- FIX 2: INTERAKSI TERBALIK ---
+                # Ganti tanda '+' menjadi '-'
+                # Karena koordinat layar Y-terbalik, gerakan CW menaikkan sudut,
+                # tapi rotasi gambar CW membutuhkan pengurangan sudut.
+                t.rotation = self.start_rotation - delta
+
+        elif self.mode == "resize":
+            cx, cy = self.start_center
+            curr_dist = math.hypot(x - cx, y - cy)
+            if self.start_dist < 1: return
+            
+            ratio = curr_dist / self.start_dist
+            new_scale = max(0.05, self.start_scale * ratio)
+            t.scale = new_scale
+            
+            # Logic Adjust Position (Anchor Fix)
+            is_center = getattr(self.active_layer, "anchor", "top_left") == "center"
+            if not is_center:
+                orig_w, orig_h = self.start_dims
+                target_w = (orig_w / self.start_scale) * new_scale
+                target_h = (orig_h / self.start_scale) * new_scale
+                t.x = int(cx - target_w / 2)
+                t.y = int(cy - target_h / 2)
+
+    def on_mouse_up(self):
+        # [UNDO SYSTEM] Cek apakah ada perubahan state?
+        if self.active_layer and self.mode:
+            self._commit_undo_command()
+
+        # Reset State
+        self.active_layer = None
+        self.active_handle = None
+        self.mode = None
+        self.last_mouse = None
+        
+        
+        # ------------------------------------------------------------------
+    # HELPER UNDO SYSTEM (Agar kode rapi)
+    # ------------------------------------------------------------------
+
+    def _snapshot_undo_state(self):
+        """Menyimpan kondisi layer sebelum diubah mouse"""
+        if not self.active_layer: return
+        self._undo_start_x = self.active_layer.transform.x
+        self._undo_start_y = self.active_layer.transform.y
+        self._undo_start_scale = self.active_layer.transform.scale
+        self._undo_start_rot = getattr(self.active_layer.transform, "rotation", 0)
+
+    def _commit_undo_command(self):
+        """Membuat Command jika ada perubahan setelah mouse dilepas"""
+        t = self.active_layer.transform
+        
+        # 1. Cek Pergerakan (MOVE)
+        if self.mode == "move":
+            if t.x != self._undo_start_x or t.y != self._undo_start_y:
+                cmd = MoveLayerCommand(
+                    self.active_layer, 
+                    self._undo_start_x, self._undo_start_y, 
+                    t.x, t.y
+                )
+                command_manager.execute(cmd)
+
+        # 2. Cek Resize (SCALE)
+        elif self.mode == "resize":
+            if t.scale != self._undo_start_scale:
+                cmd = ScaleLayerCommand(
+                    self.active_layer,
+                    self._undo_start_scale,
+                    t.scale
+                )
+                command_manager.execute(cmd)
+
+        # 3. Cek Rotasi (ROTATE)
+        elif self.mode == "rotate":
+            curr_rot = getattr(t, "rotation", 0)
+            if curr_rot != self._undo_start_rot:
+                # Perlu class RotateLayerCommand (lihat di bawah)
+                cmd = RotateLayerCommand(
+                    self.active_layer,
+                    self._undo_start_rot,
+                    curr_rot
+                )
+                command_manager.execute(cmd)
+
+==========================================================================================
+FILE: engine\interaction\snapping.py
+==========================================================================================
+
+
+class SnappingController:
+    def __init__(self, canvas_width, canvas_height, threshold=15):
+        self.cw = canvas_width
+        self.ch = canvas_height
+        self.threshold = threshold
+
+    def snap(self, x, y, w, h):
+        """
+        Input: Posisi & Ukuran Layer (Top-Left)
+        Output: (New X, New Y, List of Active Guides)
+        """
+        new_x, new_y = x, y
+        guides = [] # List string: 'v_center', 'h_center', 'left', 'right', 'top', 'bottom'
+
+        # --- HORIZONTAL SNAPPING (X Axis) ---
+        
+        # 1. Snap Left (x = 0)
+        if abs(x) < self.threshold:
+            new_x = 0
+            guides.append("left")
+            
+        # 2. Snap Right (x + w = cw)
+        elif abs((x + w) - self.cw) < self.threshold:
+            new_x = self.cw - w
+            guides.append("right")
+            
+        # 3. Snap Center X (x + w/2 = cw/2)
+        cx = x + w / 2
+        target_cx = self.cw / 2
+        if abs(cx - target_cx) < self.threshold:
+            new_x = int(target_cx - w / 2)
+            guides.append("v_center")
+
+        # --- VERTICAL SNAPPING (Y Axis) ---
+        
+        # 1. Snap Top (y = 0)
+        if abs(y) < self.threshold:
+            new_y = 0
+            guides.append("top")
+            
+        # 2. Snap Bottom (y + h = ch)
+        elif abs((y + h) - self.ch) < self.threshold:
+            new_y = self.ch - h
+            guides.append("bottom")
+            
+        # 3. Snap Center Y (y + h/2 = ch/2)
+        cy = y + h / 2
+        target_cy = self.ch / 2
+        if abs(cy - target_cy) < self.threshold:
+            new_y = int(target_cy - h / 2)
+            guides.append("h_center")
+
+        return new_x, new_y, guides
+
+==========================================================================================
+FILE: engine\interaction\transform.py
+==========================================================================================
+
+
+class LayerTransform:
+    def __init__(self, x=0, y=0, scale=1.0, rotate=0.0):
+        self.x = x
+        self.y = y
+        self.scale = scale
+        self.rotate = rotate
+
+    def copy(self):
+        return LayerTransform(
+            x=self.x,
+            y=self.y,
+            scale=self.scale,
+            rotate=self.rotate
+        )
+
+
+==========================================================================================
+FILE: engine\preview\audio_controller.py
+==========================================================================================
+
+import pygame
+import os
+import time
+
+class AudioController:
+    """
+    Mengontrol playback audio dan bertindak sebagai 'Master Clock'.
+    Video preview harus mengikuti waktu yang dilaporkan oleh class ini.
+    """
+    def __init__(self):
+        # Init mixer dengan frekuensi standar (44.1kHz, 16bit, stereo)
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+        
+        self.music = pygame.mixer.music
+        self.is_playing = False
+        self.loaded_file = None
+        
+        # Tracking waktu manual karena pygame.get_pos() reset saat seek
+        self.start_offset = 0.0  # Posisi (detik) dimulainya playback
+        self.play_start_time = 0.0 # Waktu sistem saat play ditekan
+        self.paused_at = 0.0     # Waktu saat pause ditekan
+
+    def load(self, path):
+        if not os.path.exists(path):
+            print(f"[AudioController] ❌ File not found: {path}")
+            return
+            
+        try:
+            self.music.load(path)
+            self.loaded_file = path
+            self.stop() # Reset state
+            print(f"[AudioController] 🎵 Loaded: {os.path.basename(path)}")
+        except Exception as e:
+            print(f"[AudioController] ❌ Error loading audio: {e}")
+
+    def play(self):
+        if not self.loaded_file: return
+        
+        if not self.is_playing:
+            # Play dari posisi terakhir (paused_at)
+            self.music.play(start=self.paused_at)
+            self.play_start_time = time.time()
+            self.start_offset = self.paused_at
+            self.is_playing = True
+
+    def pause(self):
+        if self.is_playing:
+            self.music.pause()
+            # Simpan posisi terakhir yang akurat
+            self.paused_at = self.get_current_time()
+            self.is_playing = False
+
+    def stop(self):
+        self.music.stop()
+        self.is_playing = False
+        self.paused_at = 0.0
+        self.start_offset = 0.0
+
+    def seek(self, t):
+        """Lompat ke detik t"""
+        if not self.loaded_file: return
+        
+        # Clamp t agar tidak minus
+        t = max(0.0, t)
+        
+        if self.is_playing:
+            # Jika sedang play, langsung lompat dan lanjut play
+            try:
+                self.music.play(start=t)
+                self.play_start_time = time.time()
+                self.start_offset = t
+            except pygame.error:
+                # Handle jika seek melebihi durasi
+                self.stop()
+        else:
+            # Jika pause, update saja penanda waktunya
+            self.paused_at = t
+
+    def get_current_time(self):
+        """
+        MASTER CLOCK FUNCTION.
+        Mengembalikan posisi waktu (detik) saat ini.
+        """
+        if self.is_playing:
+            # Hitung selisih waktu sistem sejak tombol play ditekan
+            # Ditambah offset awal (posisi start)
+            now = time.time()
+            elapsed = now - self.play_start_time
+            return self.start_offset + elapsed
+        else:
+            # Jika diam, kembalikan posisi terakhir
+            return self.paused_at
+
+    def set_volume(self, val):
+        """0.0 sampai 1.0"""
+        self.music.set_volume(val)
+
+==========================================================================================
+FILE: engine\preview\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: engine\render\ffmpeg_renderer.py
+==========================================================================================
+def run_ffmpeg_thread(self):
+        """Thread Render STABIL: Menghindari pipe blocking dan menampilkan log error"""
+        import traceback
+        output_filename = "MAMENPRO_RENDER_FINAL.mp4"
+        
+        try:
+            # 1. Pastikan Dimensi Genap (Wajib untuk H.264)
+            w = int(self.canvas.canvas_rect.width())
+            h = int(self.canvas.canvas_rect.height())
+            if w % 2 != 0: w += 1
+            if h % 2 != 0: h += 1
+
+            fps = 30
+            duration = self.timeline.duration
+            total_frames = int(duration * fps)
+            
+            print(f"🚀 Render Start: {w}x{h} @ {fps}fps | {total_frames} frames")
+            
+            if total_frames <= 0:
+                print("❌ Error: Total frames 0. Periksa timeline!")
+                return
+
+            # 2. Setup Command FFmpeg
+            # PENTING: stderr=None agar log FFmpeg langsung keluar ke terminal Anda (CMD/VSCode)
+            command = [
+                'ffmpeg', '-y',
+                '-f', 'rawvideo', '-vcodec', 'rawvideo',
+                '-s', f'{w}x{h}',
+                '-pix_fmt', 'bgra', 
+                '-r', str(fps),
+                '-i', '-', 
+                '-c:v', 'libx264',
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                output_filename
+            ]
+
+            # 3. Jalankan FFmpeg
+            # Gunakan stderr=None atau sys.stderr agar tidak terjadi DEADLOCK
+            process = subprocess.Popen(
+                command, 
+                stdin=subprocess.PIPE, 
+                stderr=None,  # JANGAN GUNAKAN subprocess.PIPE jika tidak dibaca
+                bufsize=10**8,
+                creationflags=0x08000000 if os.name == 'nt' else 0
+            )
+
+            # 4. Loop Frame
+            for i in range(total_frames):
+                if self.is_rendering_stopped:
+                    print("🛑 Render stopped by user.")
+                    break
+
+                t = i / fps
+                frame = self.timeline.get_frame(t)
+                
+                # Jika engine gagal ambil frame, buat frame hitam
+                if frame is None:
+                    frame = np.zeros((h, w, 4), dtype=np.uint8)
+                
+                # Pastikan format BGRA (4 channel) sesuai input -pix_fmt bgra
+                if frame.shape[2] == 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
+                
+                # Resize paksa jika ada selisih resolusi
+                if frame.shape[1] != w or frame.shape[0] != h:
+                    frame = cv2.resize(frame, (w, h))
+
+                # Tulis ke pipa
+                try:
+                    process.stdin.write(frame.tobytes())
+                except BrokenPipeError:
+                    print("🔥 FFmpeg berhenti mendadak (Broken Pipe). Periksa log di atas!")
+                    break
+
+                if i % 15 == 0:
+                    percent = int((i / total_frames) * 100)
+                    QMetaObject.invokeMethod(self, "set_render_status", Qt.QueuedConnection, 
+                                            Q_ARG(bool, True), Q_ARG(int, percent), Q_ARG(str, f"Frame {i}"))
+
+            # 5. Tutup Pipa
+            process.stdin.close()
+            process.wait()
+            print(f"✅ Render Selesai: {output_filename}")
+
+        except Exception as e:
+            print("🔥 CRITICAL RENDER ERROR:")
+            traceback.print_exc() # Menampilkan baris error secara detail
+        finally:
+            QMetaObject.invokeMethod(self, "set_render_status", Qt.QueuedConnection, 
+                                     Q_ARG(bool, False), Q_ARG(int, 100), Q_ARG(str, "Done"))
+
+==========================================================================================
+FILE: gui\layer_panel.py
+==========================================================================================
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
+                             QGridLayout, QLabel, QPushButton, QCheckBox, 
+                             QSpinBox, QListWidget, QFrame, QScrollArea, QComboBox)
+from PySide6.QtCore import Qt
+
+class LayerPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedWidth(280)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(5, 5, 5, 5)
+        self.main_layout.setSpacing(10)
+
+        # ==========================================
+        # 1. ATAS: AUDIO & BACKGROUND
+        # ==========================================
+        self.top_group_container = QWidget()
+        top_group_layout = QVBoxLayout(self.top_group_container)
+        top_group_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Grup Audio
+        self.group_audio = QGroupBox("AUDIO SETTINGS")
+        audio_grid = QGridLayout(self.group_audio)
+        self.btn_add_audio = QPushButton("Add Music")
+        self.chk_mute = QCheckBox("Mute")
+        self.spn_volume = QSpinBox()
+        self.spn_volume.setRange(0, 100)
+        self.spn_volume.setValue(100)
+        
+        audio_grid.addWidget(self.btn_add_audio, 0, 0, 1, 2)
+        audio_grid.addWidget(QLabel("Vol:"), 1, 0)
+        audio_grid.addWidget(self.spn_volume, 1, 1)
+        audio_grid.addWidget(self.chk_mute, 1, 2)
+        top_group_layout.addWidget(self.group_audio)
+
+        # Grup Background
+        self.group_bg = QGroupBox("BACKGROUND SETTING")
+        bg_grid = QGridLayout(self.group_bg)
+        self.btn_add_bg = QPushButton("Add Background")
+        self.spn_blur = QSpinBox()
+        self.spn_vignette = QSpinBox()
+        self.spn_bg_size = QSpinBox()
+        self.spn_bg_size.setRange(10, 500); self.spn_bg_size.setValue(100)
+        
+        bg_grid.addWidget(self.btn_add_bg, 0, 0, 1, 2)
+        bg_grid.addWidget(QLabel("Blur:"), 1, 0); bg_grid.addWidget(self.spn_blur, 1, 1)
+        bg_grid.addWidget(QLabel("Vig:"), 2, 0); bg_grid.addWidget(self.spn_vignette, 2, 1)
+        bg_grid.addWidget(QLabel("Size:"), 3, 0); bg_grid.addWidget(self.spn_bg_size, 3, 1)
+        top_group_layout.addWidget(self.group_bg)
+
+        self.main_layout.addWidget(self.top_group_container)
+
+        # ==========================================
+        # 2. TENGAH: LAYERS & ATRIBUTNYA
+        # ==========================================
+        self.mid_container = QGroupBox("TIMELINE LAYERS")
+        mid_layout = QVBoxLayout(self.mid_container)
+
+        self.list_layers = QListWidget()
+        mid_layout.addWidget(self.list_layers)
+
+        # Tombol Manajemen Layer
+        layer_btns = QHBoxLayout()
+        self.btn_new = QPushButton("+ New")
+        self.btn_del = QPushButton("Del")
+        self.btn_up = QPushButton("▲")
+        self.btn_down = QPushButton("▼")
+        for b in [self.btn_up, self.btn_down]: b.setFixedWidth(30)
+
+        layer_btns.addWidget(self.btn_new)
+        layer_btns.addWidget(self.btn_del)
+        layer_btns.addStretch()
+        layer_btns.addWidget(self.btn_up)
+        layer_btns.addWidget(self.btn_down)
+        mid_layout.addLayout(layer_btns)
+
+        self.main_layout.addWidget(self.mid_container, stretch=1)
+
+        # ==========================================
+        # 3. BAWAH: CHROMA PRESETS
+        # ==========================================
+        self.bottom_group = QGroupBox("CHROMA PRESETS")
+        bottom_layout = QVBoxLayout(self.bottom_group)
+
+        # Dropdown Preset
+        self.preset_cb = QComboBox()
+        self.preset_cb.addItems(["Green Screen Pro", "Blue Screen Clean", "Red Studio"])
+        bottom_layout.addWidget(QLabel("Saved Presets:"))
+        bottom_layout.addWidget(self.preset_cb)
+
+        # Tombol Aksi Preset
+        preset_btns = QGridLayout()
+        self.btn_preset_apply = QPushButton("Apply")
+        self.btn_preset_save = QPushButton("Save")
+        self.btn_preset_del = QPushButton("Del")
+        self.btn_preset_reset = QPushButton("Reset")
+
+        # Layouting tombol preset agar rapi (2x2)
+        preset_btns.addWidget(self.btn_preset_apply, 0, 0)
+        preset_btns.addWidget(self.btn_preset_save, 0, 1)
+        preset_btns.addWidget(self.btn_preset_del, 1, 0)
+        preset_btns.addWidget(self.btn_preset_reset, 1, 1)
+        
+        bottom_layout.addLayout(preset_btns)
+        self.main_layout.addWidget(self.bottom_group)
+
+==========================================================================================
+FILE: gui\preview_panel.py
+==========================================================================================
+# gui/preview_panel.py
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox, 
+                             QLabel, QGraphicsView, QGraphicsScene, 
+                             QGraphicsRectItem, QGraphicsPixmapItem, QPushButton, 
+                             QSlider, QStyle, QFrame, QGraphicsPathItem)
+from PySide6.QtGui import (QColor, QBrush, QPen, QPainter, QMouseEvent, 
+                          QWheelEvent, QImage, QPixmap, QPainterPath)
+from PySide6.QtCore import Qt, QRectF
+
+class VideoItem(QGraphicsRectItem):
+    def __init__(self, name, file_path, parent):
+        # Inisialisasi dengan ukuran default
+        super().__init__(0, 0, 400, 300, parent)
+        self.name = name
+        self.file_path = file_path
+        self.start_sec = 0.0
+        self.dur_sec = 10.0
+        self.track_index = 0
+        
+        # Flag agar item bisa di-drag, dipilih, dan mengirim sinyal perubahan
+        self.setFlags(QGraphicsRectItem.ItemIsMovable | 
+                      QGraphicsRectItem.ItemIsSelectable | 
+                      QGraphicsRectItem.ItemSendsGeometryChanges)
+        
+        # Area konten gambar
+        self.pixmap_item = QGraphicsPixmapItem(self)
+        
+        # Style saat dipilih agar user tahu mana yang sedang diedit
+        self.setBrush(QBrush(QColor(50, 50, 50, 50))) # Isi transparan agar responsif terhadap klik
+        self.setPen(QPen(QColor("#4cc9f0"), 2))
+        self.setZValue(1) 
+        
+   
+    def itemChange(self, change, value):
+            if change == QGraphicsRectItem.ItemPositionChange and self.isSelected():
+                # Opsional: Jika Anda ingin memicu sesuatu saat item bergerak
+                pass
+            return super().itemChange(change, value)
+        
+    def update_frame(self, numpy_frame):
+        if numpy_frame is None: return
+        h, w, ch = numpy_frame.shape
+        img = QImage(numpy_frame.data, w, h, ch * w, QImage.Format_RGB888)
+        self.pixmap_item.setPixmap(QPixmap.fromImage(img))
+        self.pixmap_item.setScale(self.rect().width() / w)
+
+    def paint(self, painter, option, widget):
+        # Gambar border seleksi yang lebih tebal jika sedang dipilih
+        if self.isSelected():
+            self.setPen(QPen(QColor("#4cc9f0"), 4, Qt.DashLine))
+        else:
+            self.setPen(QPen(QColor("#4cc9f0"), 2))
+            
+        super().paint(painter, option, widget)
+        if not self.pixmap_item.pixmap().isNull(): return
+        painter.setPen(Qt.white)
+        painter.drawText(self.rect(), Qt.AlignCenter, f"{self.name}\n(Ready)")
+
+class DimmingOverlay(QGraphicsPathItem):
+    def __init__(self, canvas_rect):
+        super().__init__()
+        self.setBrush(QBrush(QColor(0, 0, 0, 180)))
+        self.setPen(Qt.NoPen)
+        self.setZValue(10)
+        # SANGAT PENTING: Jangan terima input mouse agar tidak menghalangi klip di bawahnya
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.update_mask(canvas_rect)
+
+    def update_mask(self, canvas_rect):
+        path = QPainterPath()
+        path.addRect(-10000, -10000, 20000, 20000)
+        path.addRect(canvas_rect)
+        self.setPath(path)
+
+# ... (Tetap gunakan class CanvasContainer dan VideoGraphicsView yang sudah ada)
+class CanvasContainer(QGraphicsRectItem):
+    def __init__(self, w, h):
+        super().__init__(0, 0, w, h)
+        self.setBrush(QBrush(QColor("#1e1e1e")))
+        self.setPen(QPen(QColor("#333333"), 1))
+        # MATIKAN CLIPPING: agar klip di luar tetap terlihat
+        self.setFlag(QGraphicsRectItem.ItemClipsChildrenToShape, False)
+        self.setZValue(0)
+        
+class VideoGraphicsView(QGraphicsView):
+    def __init__(self, scene):
+        super().__init__(scene)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setAlignment(Qt.AlignCenter)
+        self.setBackgroundBrush(QBrush(QColor("#0a0a0a")))
+        self.setFrameShape(QFrame.NoFrame)
+
+    def wheelEvent(self, event: QWheelEvent):
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        self.scale(factor, factor)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton and event.modifiers() == Qt.ControlModifier:
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
+            fake_event = QMouseEvent(event.type(), event.position(), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            super().mousePressEvent(fake_event)
+        else:
+            self.setDragMode(QGraphicsView.NoDrag)
+            super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        self.setDragMode(QGraphicsView.NoDrag)
+        super().mouseReleaseEvent(event)
+
+class PreviewPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Bar Atas
+        top_bar = QHBoxLayout()
+        self.ratio_cb = QComboBox()
+        self.ratios = {
+            "9:16 (TikTok/Reels)": (1080, 1920),
+            "16:9 (YouTube)": (1920, 1080),
+            "1:1 (Instagram)": (1080, 1080),
+            "4:5 (Insta Portrait)": (1080, 1350),
+            "3:4": (1080, 1440),
+            "4:3 (Classic)": (1440, 1080)
+        }
+        self.ratio_cb.addItems(list(self.ratios.keys()))
+        top_bar.addWidget(QLabel("Rasio:"))
+        top_bar.addWidget(self.ratio_cb)
+        
+        self.template_cb = QComboBox()
+        self.template_cb.addItems(["Default"])
+        top_bar.addWidget(QLabel("Template:"))
+        top_bar.addWidget(self.template_cb)
+        
+        self.btn_load = QPushButton("Load"); self.btn_save = QPushButton("Save")
+        self.btn_del = QPushButton("Del"); self.btn_reset = QPushButton("Reset")
+        for b in [self.btn_load, self.btn_save, self.btn_del, self.btn_reset]: top_bar.addWidget(b)
+        
+        top_bar.addStretch()
+        self.main_layout.addLayout(top_bar)
+
+        self.scene = QGraphicsScene()
+        self.view = VideoGraphicsView(self.scene)
+        
+        # Setup Kanvas
+        self.canvas = CanvasContainer(1080, 1920) 
+        self.scene.addItem(self.canvas)
+        
+        # Setup Masker (Overlay Samar)
+        self.overlay = DimmingOverlay(self.canvas.rect())
+        self.scene.addItem(self.overlay)
+        
+        self.main_layout.addWidget(self.view)
+
+        # Bar Bawah
+        bottom = QVBoxLayout()
+        ctrls = QHBoxLayout()
+        self.btn_play = QPushButton()
+        self.btn_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.timeline_slider = QSlider(Qt.Horizontal)
+        ctrls.addWidget(self.btn_play); ctrls.addWidget(self.timeline_slider)
+        bottom.addLayout(ctrls)
+        
+        self.status_label = QLabel("Status: Idle")
+        bottom.addWidget(self.status_label)
+        self.main_layout.addLayout(bottom)
+
+        self.ratio_cb.currentTextChanged.connect(self.change_ratio)
+
+    def change_ratio(self, name):
+        w, h = self.ratios[name]
+        self.canvas.setRect(0, 0, w, h)
+        self.scene.setSceneRect(0, 0, w, h)
+        
+        # Update lubang masker sesuai rasio baru
+        self.overlay.update_mask(self.canvas.rect())
+        
+        self.view.fitInView(self.canvas, Qt.KeepAspectRatio)
+        self.view.scale(0.9, 0.9)
+
+    def set_status(self, text):
+        self.status_label.setText(f"Status: {text}")
+
+==========================================================================================
+FILE: gui\setting_panel.py
+==========================================================================================
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
+                             QGridLayout, QLabel, QSpinBox, QPushButton, 
+                             QLineEdit, QComboBox, QTabWidget, QSplitter, 
+                             QScrollArea, QFrame, QSlider, QTextEdit)
+from PySide6.QtCore import Qt
+
+class SettingPanel(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedWidth(320)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.splitter = QSplitter(Qt.Vertical)
+        
+        # =========================================================
+        # PANEL ATAS (A) - 70% Height
+        # =========================================================
+        self.panel_a = QTabWidget()
+        
+        # --- TAB 1: MEDIA (GAMBAR/VIDEO) ---
+        self.tab_media = QScrollArea()
+        self.tab_media.setWidgetResizable(True)
+        media_container = QWidget()
+        media_layout = QVBoxLayout(media_container)
+        
+        # Transform & Opacity
+        self.group_trans = QGroupBox("TRANSFORM & OPACITY")
+        grid_trans = QGridLayout(self.group_trans)
+        self.spn_x = QSpinBox(); self.spn_x.setRange(-5000, 5000)
+        self.spn_y = QSpinBox(); self.spn_y.setRange(-5000, 5000)
+        self.spn_scale = QSpinBox(); self.spn_scale.setRange(1, 1000); self.spn_scale.setValue(100)
+        self.spn_rot = QSpinBox(); self.spn_rot.setRange(-360, 360)
+        self.spn_opacity = QSpinBox(); self.spn_opacity.setRange(0, 100); self.spn_opacity.setValue(100)
+        # Atribut Tambahan SF-L dan SF-R
+        self.spn_sfl = QSpinBox(); self.spn_sfl.setRange(-1000, 1000)
+        self.spn_sfr = QSpinBox(); self.spn_sfr.setRange(-1000, 1000)
+        
+        grid_trans.addWidget(QLabel("Pos X"), 0, 0); grid_trans.addWidget(self.spn_x, 0, 1)
+        grid_trans.addWidget(QLabel("Pos Y"), 0, 2); grid_trans.addWidget(self.spn_y, 0, 3)
+        grid_trans.addWidget(QLabel("Scale %"), 1, 0); grid_trans.addWidget(self.spn_scale, 1, 1)
+        grid_trans.addWidget(QLabel("Rotate"), 1, 2); grid_trans.addWidget(self.spn_rot, 1, 3)
+        grid_trans.addWidget(QLabel("SF-L"), 2, 0); grid_trans.addWidget(self.spn_sfl, 2, 1)
+        grid_trans.addWidget(QLabel("SF-R"), 2, 2); grid_trans.addWidget(self.spn_sfr, 2, 3)
+        grid_trans.addWidget(QLabel("Opacity"), 3, 0); grid_trans.addWidget(self.spn_opacity, 3, 1)
+        media_layout.addWidget(self.group_trans)
+
+        # Visual Correction (Lengkap)
+        self.group_visual = QGroupBox("VISUAL ADJUSTMENT")
+        grid_vis = QGridLayout(self.group_visual)
+        self.spn_bright = QSpinBox(); self.spn_bright.setRange(-100, 100)
+        self.spn_contrast = QSpinBox(); self.spn_contrast.setRange(-100, 100)
+        self.spn_sat = QSpinBox(); self.spn_sat.setRange(-100, 100)
+        self.spn_hue = QSpinBox(); self.spn_hue.setRange(-180, 180)
+        
+        grid_vis.addWidget(QLabel("Bright"), 0, 0); grid_vis.addWidget(self.spn_bright, 0, 1)
+        grid_vis.addWidget(QLabel("Contrast"), 0, 2); grid_vis.addWidget(self.spn_contrast, 0, 3)
+        grid_vis.addWidget(QLabel("Saturate"), 1, 0); grid_vis.addWidget(self.spn_sat, 1, 1)
+        grid_vis.addWidget(QLabel("Hue"), 1, 2); grid_vis.addWidget(self.spn_hue, 1, 3)
+        media_layout.addWidget(self.group_visual)
+
+        # Chroma Key (Dengan Slider RGB)
+        self.group_chroma = QGroupBox("CHROMA KEY ENGINE")
+        grid_chroma = QGridLayout(self.group_chroma)
+        self.btn_pick_color = QPushButton("Pick Target Color")
+        self.spn_chroma_sim = QSpinBox(); self.spn_chroma_sim.setRange(0, 100)
+        self.spn_chroma_smooth = QSpinBox(); self.spn_chroma_smooth.setRange(0, 100)
+        
+        # RGB Sliders
+        self.sld_r = QSlider(Qt.Horizontal); self.sld_r.setRange(0, 255)
+        self.sld_g = QSlider(Qt.Horizontal); self.sld_g.setRange(0, 255)
+        self.sld_b = QSlider(Qt.Horizontal); self.sld_b.setRange(0, 255)
+        
+        grid_chroma.addWidget(self.btn_pick_color, 0, 0, 1, 2)
+        grid_chroma.addWidget(QLabel("Sim"), 1, 0); grid_chroma.addWidget(self.spn_chroma_sim, 1, 1)
+        grid_chroma.addWidget(QLabel("Smooth"), 2, 0); grid_chroma.addWidget(self.spn_chroma_smooth, 2, 1)
+        grid_chroma.addWidget(QLabel("R"), 3, 0); grid_chroma.addWidget(self.sld_r, 3, 1)
+        grid_chroma.addWidget(QLabel("G"), 4, 0); grid_chroma.addWidget(self.sld_g, 4, 1)
+        grid_chroma.addWidget(QLabel("B"), 5, 0); grid_chroma.addWidget(self.sld_b, 5, 1)
+        media_layout.addWidget(self.group_chroma)
+        
+        media_layout.addStretch()
+        self.tab_media.setWidget(media_container)
+        
+        # --- TAB 2: TEKS (Dengan 2 Sub-Tab) ---
+        self.tab_text_main = QTabWidget()
+        
+        # Sub-Tab A: Teks Biasa
+        self.sub_text_biasa = QScrollArea(); self.sub_text_biasa.setWidgetResizable(True)
+        biasa_container = QWidget(); biasa_layout = QVBoxLayout(biasa_container)
+        
+        self.group_biasa_style = QGroupBox("BASIC TEXT ATTRIBUTES")
+        grid_biasa = QGridLayout(self.group_biasa_style)
+        self.edit_text_biasa = QLineEdit("MamenPro")
+        self.spn_text_size = QSpinBox(); self.spn_text_size.setRange(5, 500); self.spn_text_size.setValue(40)
+        
+        # Stroke, Shadow, Background
+        self.spn_stroke = QSpinBox(); self.btn_stroke_color = QPushButton("Color")
+        self.spn_shadow_x = QSpinBox(); self.spn_shadow_y = QSpinBox()
+        self.chk_bg_active = QPushButton("Enable BG Box"); self.spn_bg_padding = QSpinBox()
+        
+        grid_biasa.addWidget(QLabel("Text:"), 0, 0); grid_biasa.addWidget(self.edit_text_biasa, 0, 1, 1, 3)
+        grid_biasa.addWidget(QLabel("Size:"), 1, 0); grid_biasa.addWidget(self.spn_text_size, 1, 1)
+        grid_biasa.addWidget(QLabel("Stroke:"), 2, 0); grid_biasa.addWidget(self.spn_stroke, 2, 1); grid_biasa.addWidget(self.btn_stroke_color, 2, 2)
+        grid_biasa.addWidget(QLabel("Shadow X/Y:"), 3, 0); grid_biasa.addWidget(self.spn_shadow_x, 3, 1); grid_biasa.addWidget(self.spn_shadow_y, 3, 2)
+        grid_biasa.addWidget(QLabel("BG Pad:"), 4, 0); grid_biasa.addWidget(self.spn_bg_padding, 4, 1); grid_biasa.addWidget(self.chk_bg_active, 4, 2)
+        
+        biasa_layout.addWidget(self.group_biasa_style); biasa_layout.addStretch()
+        self.sub_text_biasa.setWidget(biasa_container)
+        
+        # Sub-Tab B: Teks Paragraf
+        self.sub_text_para = QScrollArea(); self.sub_text_para.setWidgetResizable(True)
+        para_container = QWidget(); para_layout = QVBoxLayout(para_container)
+        
+        self.group_para = QGroupBox("PARAGRAPH SETTINGS")
+        v_para = QVBoxLayout(self.group_para)
+        self.edit_text_para = QTextEdit(); self.edit_text_para.setMaximumHeight(100)
+        self.combo_align = QComboBox(); self.combo_align.addItems(["Left", "Center", "Right", "Justify"])
+        self.spn_line_space = QSpinBox(); self.spn_line_space.setRange(0, 100)
+        
+        v_para.addWidget(QLabel("Content:")); v_para.addWidget(self.edit_text_para)
+        v_para.addWidget(QLabel("Alignment:")); v_para.addWidget(self.combo_align)
+        v_para.addWidget(QLabel("Line Spacing:")); v_para.addWidget(self.spn_line_space)
+        
+        para_layout.addWidget(self.group_para); para_layout.addStretch()
+        self.sub_text_para.setWidget(para_container)
+        
+        self.tab_text_main.addTab(self.sub_text_biasa, "Teks Biasa")
+        self.tab_text_main.addTab(self.sub_text_para, "Paragraf")
+
+        # --- TAB 3: CAPTION ---
+        self.tab_caption = QScrollArea(); self.tab_caption.setWidgetResizable(True)
+        # (Isi tetap sama seperti sebelumnya)
+
+        self.panel_a.addTab(self.tab_media, "Media")
+        self.panel_a.addTab(self.tab_text_main, "Teks")
+        self.panel_a.addTab(self.tab_caption, "Caption")
+
+        # =========================================================
+        # PANEL BAWAH (B) - 30% Height (Render Settings)
+        # =========================================================
+        self.panel_b = QGroupBox("RENDER ENGINE")
+        layout_b = QVBoxLayout(self.panel_b)
+        
+        # Quality & Path (Reuse existing logic)
+        h_qual = QHBoxLayout()
+        self.combo_quality = QComboBox()
+        self.combo_quality.addItems(["Fast (480p)", "Standard (720p)", "High (1080p)", "Ultra (4K)"])
+        h_qual.addWidget(QLabel("Quality:")); h_qual.addWidget(self.combo_quality)
+        layout_b.addLayout(h_qual)
+        
+        h_path = QHBoxLayout()
+        self.txt_output_path = QLineEdit(); self.txt_output_path.setPlaceholderText("Output folder...")
+        self.btn_browse = QPushButton("..."); self.btn_browse.setFixedWidth(30)
+        h_path.addWidget(self.txt_output_path); h_path.addWidget(self.btn_browse)
+        layout_b.addLayout(h_path)
+        
+        # Render Buttons
+        self.btn_render = QPushButton("🚀 START RENDER")
+        self.btn_render.setFixedHeight(40)
+        self.btn_render.setStyleSheet("background-color: #2a9d8f; color: white; font-weight: bold;")
+        
+        self.btn_stop = QPushButton("STOP")
+        self.btn_stop.setStyleSheet("background-color: #e76f51; color: white;")
+        
+        layout_b.addWidget(self.btn_render)
+        layout_b.addWidget(self.btn_stop)
+
+        # Memasukkan Panel A dan B ke dalam Splitter
+        self.splitter.addWidget(self.panel_a)
+        self.splitter.addWidget(self.panel_b)
+        
+        # Mengatur Rasio 70% (Atas) dan 30% (Bawah)
+        self.splitter.setStretchFactor(0, 7)
+        self.splitter.setStretchFactor(1, 3)
+        
+        self.main_layout.addWidget(self.splitter)
+
+    def block_all_signals(self, block):
+        """Metode diperbarui untuk mencakup semua jenis input baru"""
+        for widget in self.findChildren((QSpinBox, QComboBox, QLineEdit, QSlider, QTextEdit)):
+            widget.blockSignals(block)
+
+==========================================================================================
+FILE: gui\styles.py
+==========================================================================================
+STYLESHEET = """
+QMainWindow { background-color: #121212; }
+QWidget { color: #e0e0e0; font-family: 'Segoe UI'; font-size: 12px; }
+QGroupBox { 
+    border: 1px solid #333; border-radius: 6px; 
+    margin-top: 20px; font-weight: bold; color: #4cc9f0;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }
+QSpinBox, QComboBox { background-color: #252526; border: 1px solid #444; padding: 4px; border-radius: 4px; }
+QPushButton { background-color: #333; border: 1px solid #555; padding: 8px; border-radius: 4px; font-weight: bold; }
+QPushButton:hover { background-color: #444; border-color: #4cc9f0; }
+QListWidget { background-color: #1a1a1a; border: 1px solid #333; outline: none; }
+QListWidget::item:selected { background-color: #2d2d30; border-left: 3px solid #4cc9f0; }
+"""
+
+==========================================================================================
+FILE: gui\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+FILE: utils\paths.py
+==========================================================================================
+import os
+
+def project_path(rel_path):
+    """
+    Resolve path relatif terhadap ROOT PROJECT
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, rel_path)
+
+
+==========================================================================================
+FILE: utils\__init__.py
+==========================================================================================
+
+
+==========================================================================================
+TOTAL FILES BUNDLED: 82
+==========================================================================================
