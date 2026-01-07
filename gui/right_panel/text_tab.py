@@ -22,35 +22,35 @@ class TextTab(QScrollArea):
         self._connect_signals()
 
     def _init_text_style(self):
-        group = QGroupBox("GAYA TEKS")
+        group = QGroupBox("GAYA TEKS & KONTEN")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
         
-        # 1. Konten Teks
-        self.txt_content = QLineEdit("Mamen Pro Editor")
-        self.txt_content.setPlaceholderText("Ketik Teks Utama di sini...")
-        layout.addWidget(QLabel("Konten Teks:"))
-        layout.addWidget(self.txt_content)
+        # 1. Konten Teks (Unified Input)
+        # Menggantikan QLineEdit lama dengan QTextEdit 4 baris
+        layout.addWidget(QLabel("Isi Teks / Paragraf:"))
+        self.txt_input = QTextEdit()
+        self.txt_input.setPlaceholderText("Ketik teks di sini...")
+        self.txt_input.setMaximumHeight(80) # Kira-kira 4 baris
+        layout.addWidget(self.txt_input)
         
-        # 2. Font
+        # 2. Font & Style
         self.font_combo = QFontComboBox()
         layout.addWidget(QLabel("Jenis Font:"))
         layout.addWidget(self.font_combo)
         
-        # 3. Ukuran, Rotasi & Warna
+        # 3. Ukuran, Rotasi & Warna Teks
         row_prop = QHBoxLayout()
-        
         self.spn_size = QSpinBox()
         self.spn_size.setRange(8, 500); self.spn_size.setValue(60)
         self.spn_size.setSuffix(" px"); self.spn_size.setPrefix("Size: ")
         
-        # --- NEW ROTATION ---
         self.spn_rot = QSpinBox()
         self.spn_rot.setRange(-360, 360); self.spn_rot.setValue(0)
         self.spn_rot.setSuffix("°"); self.spn_rot.setPrefix("Rot: ")
 
-        self.btn_text_color = QPushButton("Warna")
-        self.btn_text_color.setStyleSheet("background-color: #ffffff; color: black;")
+        self.btn_text_color = QPushButton("Warna Teks")
+        self.btn_text_color.setStyleSheet("background-color: #ffffff; color: black; font-weight:bold;")
         self.text_color_hex = "#ffffff"
         self.btn_text_color.clicked.connect(lambda: self._pick_color("text"))
 
@@ -100,15 +100,13 @@ class TextTab(QScrollArea):
         self.layout.addWidget(group)
 
     def _init_paragraph_style(self):
-        group = QGroupBox("PARAGRAF")
+        group = QGroupBox("SETTING PARAGRAF (Khusus Mode Paragraf)")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
         
-        self.txt_area = QTextEdit()
-        self.txt_area.setPlaceholderText("Ketik paragraf panjang di sini...")
-        self.txt_area.setMaximumHeight(80)
-        layout.addWidget(self.txt_area)
+        # [HAPUS] Input Text di sini sudah dihapus sesuai request
         
+        # Alignment
         row_align = QHBoxLayout()
         self.btn_align_left = QPushButton("⬅")
         self.btn_align_center = QPushButton("↔")
@@ -123,26 +121,23 @@ class TextTab(QScrollArea):
         
         for btn in self.align_group.buttons():
             btn.setCheckable(True)
-            btn.setFixedWidth(30)
+            btn.setFixedWidth(40)
             
-        self.btn_align_left.setChecked(True)
+        self.btn_align_center.setChecked(True) # Default Center
         
+        # Line Spacing
         self.spn_line_height = QSpinBox()
         self.spn_line_height.setRange(0, 200)
         self.spn_line_height.setValue(100)
-        self.spn_line_height.setPrefix("Spasi: ")
+        self.spn_line_height.setPrefix("Spasi Baris: ")
         
         row_align.addWidget(self.btn_align_left)
         row_align.addWidget(self.btn_align_center)
         row_align.addWidget(self.btn_align_right)
         row_align.addWidget(self.btn_align_justify)
-        row_align.addWidget(self.spn_line_height)
         layout.addLayout(row_align)
+        layout.addWidget(self.spn_line_height)
         
-        self.btn_para_bg = QPushButton("Warna Background Paragraf")
-        self.btn_para_bg.clicked.connect(lambda: self._pick_color("para_bg"))
-        self.para_bg_hex = "#ffffff"
-        layout.addWidget(self.btn_para_bg)
         self.layout.addWidget(group)
 
     def _pick_color(self, target):
@@ -151,7 +146,7 @@ class TextTab(QScrollArea):
             hex_c = color.name()
             if target == "text":
                 self.text_color_hex = hex_c
-                self.btn_text_color.setStyleSheet(f"background-color: {hex_c};")
+                self.btn_text_color.setStyleSheet(f"background-color: {hex_c}; color: {'white' if color.lightness() < 128 else 'black'}; font-weight:bold;")
             elif target == "stroke":
                 self.stroke_color_hex = hex_c
                 self.btn_stroke_color.setStyleSheet(f"background-color: {hex_c};")
@@ -161,35 +156,31 @@ class TextTab(QScrollArea):
             elif target == "shadow":
                 self.shadow_color_hex = hex_c
                 self.btn_shadow_color.setStyleSheet(f"background-color: {hex_c};")
-            elif target == "para_bg":
-                self.para_bg_hex = hex_c
-                self.btn_para_bg.setStyleSheet(f"background-color: {hex_c};")
             self._emit_change()
 
     def _connect_signals(self):
-        self.txt_content.textChanged.connect(self._emit_change)
+        self.txt_input.textChanged.connect(self._emit_change)
         self.font_combo.currentFontChanged.connect(self._emit_change)
         self.spn_size.valueChanged.connect(self._emit_change)
-        self.spn_rot.valueChanged.connect(self._emit_change) # Connect Rotasi
+        self.spn_rot.valueChanged.connect(self._emit_change)
         self.chk_stroke.toggled.connect(self._emit_change)
         self.spn_stroke.valueChanged.connect(self._emit_change)
         self.chk_bg.toggled.connect(self._emit_change)
         self.chk_shadow.toggled.connect(self._emit_change)
-        self.txt_area.textChanged.connect(self._emit_change)
         self.align_group.buttonClicked.connect(self._emit_change)
         self.spn_line_height.valueChanged.connect(self._emit_change)
 
     def _emit_change(self):
-        align = "left"
-        if self.btn_align_center.isChecked(): align = "center"
+        align = "center" # Default
+        if self.btn_align_left.isChecked(): align = "left"
         elif self.btn_align_right.isChecked(): align = "right"
         elif self.btn_align_justify.isChecked(): align = "justify"
 
         data = {
-            "text_content": self.txt_content.text(),
+            "text_content": self.txt_input.toPlainText(), # Satu sumber input
             "font": self.font_combo.currentFont().family(),
             "font_size": self.spn_size.value(),
-            "rotation": self.spn_rot.value(), # Kirim Rotation
+            "rotation": self.spn_rot.value(),
             "text_color": self.text_color_hex,
             "stroke_on": self.chk_stroke.isChecked(),
             "stroke_width": self.spn_stroke.value(),
@@ -198,23 +189,41 @@ class TextTab(QScrollArea):
             "bg_color": self.bg_color_hex,
             "shadow_on": self.chk_shadow.isChecked(),
             "shadow_color": self.shadow_color_hex,
-            "paragraph_content": self.txt_area.toPlainText(),
             "alignment": align,
-            "line_spacing": self.spn_line_height.value(),
-            "paragraph_bg_color": self.para_bg_hex
+            "line_spacing": self.spn_line_height.value()
         }
         self.sig_text_changed.emit(data)
 
     def set_values(self, data):
         self.blockSignals(True)
-        if "text_content" in data: self.txt_content.setText(data["text_content"])
-        if "paragraph_content" in data: self.txt_area.setText(data["paragraph_content"])
+        # Populate Text Input (Baik itu Text biasa atau Paragraf)
+        if "text_content" in data: 
+            self.txt_input.setText(data["text_content"])
+        
         if "font_size" in data: self.spn_size.setValue(data["font_size"])
-        if "rotation" in data: self.spn_rot.setValue(data["rotation"]) # Terima Rotation
+        if "rotation" in data: self.spn_rot.setValue(data["rotation"])
+        
+        # Colors
+        if "text_color" in data:
+            self.text_color_hex = data["text_color"]
+            self.btn_text_color.setStyleSheet(f"background-color: {self.text_color_hex};")
         
         if "stroke_on" in data: self.chk_stroke.setChecked(data["stroke_on"])
         if "stroke_width" in data: self.spn_stroke.setValue(data["stroke_width"])
-        if "shadow_on" in data: self.chk_shadow.setChecked(data["shadow_on"])
+        
         if "bg_on" in data: self.chk_bg.setChecked(data["bg_on"])
+        if "bg_color" in data:
+            self.bg_color_hex = data["bg_color"]
+            self.btn_bg_color.setStyleSheet(f"background-color: {self.bg_color_hex};")
+
+        if "shadow_on" in data: self.chk_shadow.setChecked(data["shadow_on"])
+        
+        # Alignment
+        if "alignment" in data:
+            align = data["alignment"]
+            if align == "left": self.btn_align_left.setChecked(True)
+            elif align == "right": self.btn_align_right.setChecked(True)
+            elif align == "justify": self.btn_align_justify.setChecked(True)
+            else: self.btn_align_center.setChecked(True)
 
         self.blockSignals(False)
