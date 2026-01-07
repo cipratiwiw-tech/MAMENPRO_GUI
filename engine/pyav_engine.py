@@ -7,13 +7,22 @@ class PyAVClip:
     def __init__(self, path, fps=30):
         self.container = av.open(path)
         
-        # PERBAIKAN: Cek apakah ada stream video
         if len(self.container.streams.video) == 0:
             raise ValueError(f"File tidak memiliki stream video: {path}")
         
         self.stream = self.container.streams.video[0]
         self.stream.thread_type = "AUTO"
         self.time_base = float(self.stream.time_base)
+
+        # --- TAMBAHKAN LOGIKA DURASI DI SINI ---
+        # Container.duration biasanya dalam mikrosekon (1/1.000.000)
+        if self.container.duration:
+            self.duration = float(self.container.duration / av.time_base)
+        elif self.stream.duration:
+            self.duration = float(self.stream.duration * self.time_base)
+        else:
+            self.duration = 0.0
+        # ---------------------------------------
 
         self.fps = fps
         self.cache = FrameCache(max_frames=180)
