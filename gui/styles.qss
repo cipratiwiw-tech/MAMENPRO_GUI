@@ -5,11 +5,16 @@ QMainWindow {
 }
 
 /* --- GLOBAL TEXT & FONT --- */
-/* Warna teks Ice White (Putih kebiruan) agar terlihat dingin & bersih */
-QWidget { 
+/* Ganti QWidget dengan QMainWindow atau spesifikasikan ke container utama */
+QMainWindow, QDialog, QScrollArea { 
     color: #d8dee9;
     font-family: 'Segoe UI'; 
     font-size: 12px; 
+}
+
+/* Biarkan widget input menggunakan ukuran spesifik agar tidak konflik */
+QSpinBox, QComboBox, QTextEdit, QLineEdit {
+    font-size: 12px;
 }
 
 /* --- GROUP BOX (Kotak Kontainer) --- */

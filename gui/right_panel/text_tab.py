@@ -1,8 +1,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QLabel, QSpinBox, 
                              QPushButton, QComboBox, QTextEdit, QScrollArea, 
                              QCheckBox, QHBoxLayout, QFontComboBox, QLineEdit, 
-                             QButtonGroup, QColorDialog)
+                             QButtonGroup, QColorDialog, QFontComboBox, QFontDialog)
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 class TextTab(QScrollArea):
     sig_text_changed = Signal(dict)
@@ -25,6 +26,12 @@ class TextTab(QScrollArea):
         group = QGroupBox("GAYA TEKS & KONTEN")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
+        # Di dalam _init_text_style pada text_tab.py
+        self.font_combo = QFontComboBox()
+        # Tambahkan baris ini untuk memastikan ukuran awal valid
+        self.font_combo.setFont(QFont("Segoe UI", 12)) 
+        layout.addWidget(QLabel("Jenis Font:"))
+        layout.addWidget(self.font_combo)
         
         # 1. Konten Teks (Unified Input)
         # Menggantikan QLineEdit lama dengan QTextEdit 4 baris
