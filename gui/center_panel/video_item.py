@@ -406,7 +406,8 @@ class BackgroundItem(VideoItem):
         self.settings.update({
             "blur": 0, "vig": 0, "is_bg": True, 
             "scale": 100, "x": 0, "y": 0, 
-            "fit": "cover" 
+            "fit": "cover",
+            "lock": False
         })
         
         self.blur_effect.setEnabled(False)
@@ -427,15 +428,16 @@ class BackgroundItem(VideoItem):
 
     def update_bg_settings(self, data):
         self.settings.update(data)
-        # Pastikan tidak ada konflik antara setPos (Qt) dan settings['x']
-        # Background Item HARUS tetap di (0,0) secara fisik container, 
-        # Pergeseran visual hanya dilakukan via Translation painter atau update settings x/y
-        # Namun, agar drag & drop preview jalan, kita biarkan setPos berjalan,
-        # tapi controller HARUS membacanya sebagai OFFSET, bukan posisi absolut.
         
-        # (Kode lama sudah oke, yang penting logika di Controller "SOLUSI BACKGROUND" di atas diterapkan)
+        # [FIX] Update Flag Movable Sesuai Status Lock
+        if "lock" in data:
+            is_locked = data["lock"]
+            # Jika dikunci, matikan fitur Movable
+            self.setFlag(QGraphicsItem.ItemIsMovable, not is_locked)
+        
         if "x" in data or "y" in data:
             self.setPos(data.get("x", 0), data.get("y", 0))
+            
         self.update()
 
     def paint(self, painter, option, widget):
