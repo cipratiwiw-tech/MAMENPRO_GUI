@@ -13,9 +13,11 @@ class RenderWorker(QThread):
         self.output_path = output_path
         self.duration = float(duration)
         
-        # 🛡️ SAFETY 1: Dimensi WAJIB Genap (Aturan Codec H.264)
-        self.canvas_w = int(width) if int(width) % 2 == 0 else int(width) + 1
-        self.canvas_h = int(height) if int(height) % 2 == 0 else int(height) + 1
+        # 🛡️ SAFETY 1: Paksa Dimensi Genap (Wajib untuk codec H.264)
+        w = int(width)
+        h = int(height)
+        self.canvas_w = w if w % 2 == 0 else w + 1
+        self.canvas_h = h if h % 2 == 0 else h + 1
         
         self.audio_tracks = audio_tracks if audio_tracks else []
         self.is_stopped = False
@@ -26,75 +28,91 @@ class RenderWorker(QThread):
         if self.process:
             self.process.kill()
 
+    # 🛡️ SAFETY 2: Sanitasi Angka (Koma -> Titik) untuk Locale Indonesia
+    def _fmt(self, val):
+        return f"{float(val):.3f}".replace(',', '.')
+
+    def _humanize_error(self, stderr):
+        s = stderr.lower() if stderr else ""
+        if "nothing was written" in s:
+            return "Render Gagal: Pipeline output kosong (Cek durasi layer)."
+        if "invalid argument" in s:
+            return "FFmpeg Error -22: Kesalahan parameter filter."
+        return f"FFmpeg Error:\n{stderr[-800:]}"
+
     def run(self):
-        self.sig_progress.emit("🚀 Memulai Render (Internal Generator Mode)...")
+        self.sig_progress.emit("🚀 Menyiapkan Render Engine...")
         
-        # Durasi minimal 1 detik untuk mencegah crash
+        # Durasi minimal 1 detik untuk safety
         safe_duration = max(1.0, self.duration)
+        s_dur = self._fmt(safe_duration)
         
         inputs = []
         filter_complex = []
+        temp_files = [] 
         
         # =========================================================================
-        # 1. GENERATOR STREAM (DI DALAM FILTER, BUKAN INPUT)
+        # 1. BASE VISUAL LAYER (Canvas Hitam)
         # =========================================================================
-        # Ini teknik paling aman. Stream dibuat oleh filter graph, jadi labelnya pasti ada.
-        
-        # [base_v] = Canvas Hitam
+        # Force format RGBA agar kompatibel dengan overlay
         filter_complex.append(
-            f"color=c=black:s={self.canvas_w}x{self.canvas_h}:r=30:d={safe_duration:.3f}[base_v]"
+            f"color=c=black:s={self.canvas_w}x{self.canvas_h}:r=30:d={s_dur},format=rgba[base_v]"
         )
-        
-        # [base_a] = Audio Hening (Stereo, 44.1kHz)
-        filter_complex.append(
-            f"anullsrc=channel_layout=stereo:sample_rate=44100:d={safe_duration:.3f}[base_a]"
-        )
-        
         last_vid_node = "[base_v]"
         
         # =========================================================================
         # 2. PROSES VISUAL
         # =========================================================================
-        current_input_idx = 0 # Kita mulai dari 0 karena base tidak pakai input eksternal
-        temp_files = [] 
+        current_input_idx = 0 
         
         try:
+            # Urutkan layer dari bawah ke atas
             sorted_items = sorted(self.items, key=lambda x: x.get('z_value', 0))
 
             for idx, item in enumerate(sorted_items):
                 if self.is_stopped: break
 
                 is_text = item.get('is_text', False)
-                file_path = item.get('path') 
+                file_path = item.get('path')
                 
                 # --- HANDLING INPUT ---
+                # Gunakan Absolute Path untuk keamanan
                 if is_text:
                     temp_img = f"temp_render_text_{idx}.png"
+                    abs_temp_path = os.path.abspath(temp_img)
+                    
                     if item.get('text_pixmap'):
-                        item['text_pixmap'].save(temp_img)
-                        temp_files.append(temp_img)
-                        inputs.extend(['-loop', '1', '-t', f"{safe_duration:.3f}", '-i', temp_img])
+                        item['text_pixmap'].save(abs_temp_path)
+                        temp_files.append(abs_temp_path)
+                        inputs.extend(['-loop', '1', '-t', s_dur, '-i', abs_temp_path])
                     else:
-                        inputs.extend(['-f', 'lavfi', '-i', f"color=c=black@0:s=100x100:d={safe_duration:.3f}"])
+                        # Dummy fallback jika teks gagal
+                        inputs.extend(['-f', 'lavfi', '-i', f"color=c=black@0:s=100x100:d={s_dur}"])
                 else:
                     if not file_path or not os.path.exists(file_path): 
                         continue
                     
-                    ext = os.path.splitext(file_path)[1].lower()
+                    abs_path = os.path.abspath(file_path)
+                    ext = os.path.splitext(abs_path)[1].lower()
                     image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
                     
                     if ext in image_exts:
-                        # Image loop
-                        inputs.extend(['-loop', '1', '-t', f"{safe_duration:.3f}", '-i', file_path])
+                        inputs.extend(['-loop', '1', '-t', s_dur, '-i', abs_path])
                     else:
-                        # Video normal
-                        inputs.extend(['-i', file_path])
+                        inputs.extend(['-i', abs_path])
 
                 curr_in_node = f"[{current_input_idx}:v]"
                 current_input_idx += 1
 
                 # --- TRANSFORMASI ---
-                vis_w = item['visual_w']; vis_h = item['visual_h']
+                # 🛡️ SAFETY 3: Ukuran Minimal 2x2 (Mencegah scale=0 error)
+                vis_w = max(2, int(item['visual_w']))
+                vis_h = max(2, int(item['visual_h']))
+                
+                # Pastikan genap
+                if vis_w % 2 != 0: vis_w += 1
+                if vis_h % 2 != 0: vis_h += 1
+                
                 pos_x = item['x']; pos_y = item['y']
                 rot = item.get('rot', 0); opacity = item.get('opacity', 100)
                 blur_val = item.get('blur', 0); vig_val = item.get('vig', 0)
@@ -103,70 +121,78 @@ class RenderWorker(QThread):
                 out_node = f"[layer{idx}]"
 
                 filters = []
-                filters.append("setpts=PTS-STARTPTS") # Reset timestamp
+                filters.append("setpts=PTS-STARTPTS") 
+                filters.append(f"scale={vis_w}:{vis_h}:flags=lanczos")
                 
-                # Scale Genap
-                rw = vis_w if vis_w % 2 == 0 else vis_w + 1
-                rh = vis_h if vis_h % 2 == 0 else vis_h + 1
-                filters.append(f"scale={rw}:{rh}:flags=lanczos")
+                if blur_val > 0: 
+                    filters.append(f"gblur=sigma={self._fmt(blur_val * 0.5)}")
+                if vig_val > 0: 
+                    angle = (vig_val / 100.0) * 0.5
+                    filters.append(f"vignette=angle={self._fmt(angle)}")
+                if rot != 0: 
+                    filters.append(f"rotate={rot}*PI/180:ow=rotw(iw):oh=roth(ih):c=none")
                 
-                if blur_val > 0: filters.append(f"gblur=sigma={blur_val * 0.5}")
-                if vig_val > 0: filters.append(f"vignette=angle={(vig_val / 100.0) * 0.5}")
-                if rot != 0: filters.append(f"rotate={rot}*PI/180:ow=rotw(iw):oh=roth(ih):c=none")
-                
-                filters.append(f"format=rgba,colorchannelmixer=aa={opacity/100.0:.2f}")
+                op_val = self._fmt(opacity / 100.0)
+                filters.append(f"format=rgba,colorchannelmixer=aa={op_val}")
                 
                 filter_complex.append(f"{curr_in_node}{','.join(filters)}{scaled_node}")
 
                 # --- OVERLAY ---
                 start_t = float(item.get('start_time') or 0.0)
                 end_t = float(item.get('end_time') or safe_duration)
-                
                 if end_t <= start_t: end_t = start_t + 0.1
                 
+                s_start = self._fmt(start_t)
+                s_end = self._fmt(end_t)
+                
+                ox = f"{pos_x}-(w-iw)/2"
+                oy = f"{pos_y}-(h-ih)/2"
+                
+                # 🛡️ SAFETY 4: ENABLE TANPA KUTIP
+                # Hapus tanda kutip tunggal di 'between(...)' agar aman di Windows
                 overlay_cmd = (
-                    f"{last_vid_node}{scaled_node}overlay={pos_x}-(w-iw)/2:{pos_y}-(h-ih)/2:"
-                    f"enable='between(t,{start_t:.3f},{end_t:.3f})':format=auto{out_node}"
+                    f"{last_vid_node}{scaled_node}overlay={ox}:{oy}:"
+                    f"enable=between(t,{s_start},{s_end}):format=auto{out_node}"
                 )
                 filter_complex.append(overlay_cmd)
                 last_vid_node = out_node
 
             if self.is_stopped: 
-                self.sig_finished.emit(False, "Render Dibatalkan."); return
+                self.sig_finished.emit(False, "Dibatalkan."); return
 
-            # Format Final YUV420P
+            # Final Video Format
             final_vid_label = "[vfinal]"
             filter_complex.append(f"{last_vid_node}format=yuv420p{final_vid_label}")
 
             # =========================================================================
-            # 3. PROSES AUDIO (ANTI ERROR)
+            # 3. PROSES AUDIO (MODE STABIL)
             # =========================================================================
             
-            # Kita mulai dengan base silent yang SUDAH dibuat di filter_complex [base_a]
-            audio_mix_inputs = ["[base_a]"]
+            audio_inputs = []
             
-            # Tambahkan musik eksternal (Input File)
+            # Ambil audio hanya dari file musik eksternal (Aman)
             for track in self.audio_tracks:
                 if track and os.path.exists(track):
                     inputs.extend(['-i', track])
-                    audio_mix_inputs.append(f"[{current_input_idx}:a]")
+                    resampled_node = f"[a_in_{current_input_idx}]"
+                    # Resample ke 44100Hz agar seragam
+                    filter_complex.append(f"[{current_input_idx}:a]aresample=44100{resampled_node}")
+                    audio_inputs.append(resampled_node)
                     current_input_idx += 1
             
-            final_audio_label = "[afinal]"
+            final_audio_label = None
             
-            # Jika ada musik, mix dengan base. Jika tidak, pass-through base.
-            if len(audio_mix_inputs) > 1:
-                # Mix semua jadi satu
-                count = len(audio_mix_inputs)
-                # dropout_transition=0 mencegah volume naik turun saat transisi
-                mix_cmd = f"{''.join(audio_mix_inputs)}amix=inputs={count}:duration=first:dropout_transition=0{final_audio_label}"
-                filter_complex.append(mix_cmd)
-            else:
-                # Hanya ada silence, beri label baru agar map konsisten
-                filter_complex.append(f"[base_a]anull{final_audio_label}") # Dummy filter untuk rename label
-
+            # Jika ada musik, mix jadi satu
+            if len(audio_inputs) > 0:
+                final_audio_label = "[aout]"
+                count = len(audio_inputs)
+                # Mix tanpa durasi limit (ikut video via -shortest nanti)
+                filter_complex.append(
+                    f"{''.join(audio_inputs)}amix=inputs={count}:dropout_transition=0{final_audio_label}"
+                )
+            
             # =========================================================================
-            # 4. FINAL COMMAND
+            # 4. EKSEKUSI FFmpeg
             # =========================================================================
             
             full_filter_str = ";".join(filter_complex)
@@ -175,18 +201,23 @@ class RenderWorker(QThread):
             cmd.extend(inputs)
             cmd.extend(['-filter_complex', full_filter_str])
             
-            # Map Output Labels
+            # Map Video
             cmd.extend(['-map', final_vid_label])
-            cmd.extend(['-map', final_audio_label])
             
-            # Encoder Settings
+            # Map Audio (Hanya jika ada)
+            if final_audio_label:
+                cmd.extend(['-map', final_audio_label])
+                cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
+            else:
+                # 🛡️ SAFETY 5: Jika tidak ada audio, jangan map apa-apa (Video Only)
+                # Ini mencegah crash karena stream kosong/anullsrc
+                pass 
+            
             cmd.extend([
                 '-c:v', 'libx264', 
                 '-preset', 'ultrafast', 
                 '-crf', '23', 
-                '-c:a', 'aac', 
-                '-b:a', '192k',
-                '-shortest', # Berhenti jika stream terpendek habis (biasanya video krn durasi fix)
+                '-shortest', # Stop jika salah satu stream habis (biasanya video)
                 self.output_path
             ])
 
@@ -209,7 +240,7 @@ class RenderWorker(QThread):
             elif self.process.returncode == 0: 
                 self.sig_finished.emit(True, f"Render Selesai!\nSaved to: {self.output_path}")
             else: 
-                self.sig_finished.emit(False, f"FFmpeg Error Log:\n{stdout[-1000:]}")
+                self.sig_finished.emit(False, self._humanize_error(stdout))
 
         except Exception as e: 
             self.sig_finished.emit(False, f"System Error: {str(e)}")

@@ -215,49 +215,56 @@ class EditorController:
         return True, None
 
     def on_render_clicked(self):
-        # 1. Update Durasi Global
+        # 1. Update Durasi Global & Validasi
         self.recalculate_global_duration()
-        current_duration = self.engine.duration
         
-        # Validasi Durasi Minimal (0.1 detik)
+        try:
+            current_duration = float(self.engine.duration)
+        except:
+            current_duration = 5.0
+            
         if current_duration <= 0.1:
-            QMessageBox.warning(self.view, "Render Gagal", "Durasi proyek terlalu pendek (0 detik).")
-            return
+            current_duration = 5.0
+            print("[INFO] Durasi 0 terdeteksi, memaksa ke 5.0 detik")
 
         # 2. Ambil Output Path
         output_path, _ = QFileDialog.getSaveFileName(self.view, "Simpan Video", "project_output.mp4", "Video Files (*.mp4)")
         if not output_path: return
 
-        # 3. Tentukan Resolusi Canvas
+        # 3. Tentukan Resolusi (Standardize)
         scene_rect = self.preview.scene.sceneRect()
         w_curr = int(scene_rect.width())
         h_curr = int(scene_rect.height())
         
-        # Standarisasi ke Genap
-        if w_curr == h_curr: canvas_w, canvas_h = 1080, 1080
-        elif w_curr < h_curr: canvas_w, canvas_h = 1080, 1920
-        else: canvas_w, canvas_h = 1920, 1080
+        # Gunakan resolusi standar agar tidak aneh (misal 541px)
+        if abs(w_curr - 1080) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1080, 1080
+        elif abs(w_curr - 1080) < 5 and abs(h_curr - 1920) < 5: canvas_w, canvas_h = 1080, 1920
+        elif abs(w_curr - 1920) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1920, 1080
+        else:
+            canvas_w, canvas_h = w_curr, h_curr
         
         # 4. Kumpulkan Data Layer
         items_data = []
-        sw, sh = float(w_curr), float(h_curr)
+        sw, sh = float(canvas_w), float(canvas_h)
         
-        # Ambil semua VideoItem (Clip, BG, Text)
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
-            # Ambil data waktu, default ke 0-5s jika corrupt
-            start_t = float(getattr(item, 'start_time', 0.0) or 0.0)
-            end_t = float(getattr(item, 'end_time', 5.0) or 5.0)
+            # Ambil data waktu
+            try:
+                start_t = float(getattr(item, 'start_time', 0.0) or 0.0)
+                end_t = float(getattr(item, 'end_time', 5.0) or 5.0)
+            except:
+                start_t, end_t = 0.0, 5.0
             
-            # Skip layer yang durasinya 0 atau negatif
+            # Skip layer invalid
             if end_t <= start_t: continue
 
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
             
+            # Logic koordinat
             if is_bg:
-                # Cek toggle background
                 if not self.layer_panel.chk_bg_toggle.isChecked(): continue
                 if not item.current_pixmap: continue
                 
@@ -265,13 +272,14 @@ class EditorController:
                 vw = int(item.current_pixmap.width() * scale)
                 vh = int(item.current_pixmap.height() * scale)
                 
+                # Center background logic
                 px = int((sw/2 + item.settings.get('x', 0)) - (vw/2))
                 py = int((sh/2 + item.settings.get('y', 0)) - (vh/2))
             else:
                 vw, vh = int(item.rect().width()), int(item.rect().height())
                 px, py = int(item.x()), int(item.y())
 
-            # Skip item "hantu" (width/height <= 0)
+            # Skip jika dimensi 0 (akan ditolak engine, tapi filter di sini juga)
             if vw <= 0 or vh <= 0: continue
 
             items_data.append({
@@ -290,9 +298,6 @@ class EditorController:
                 'end_time': end_t
             })
 
-        # Izinkan render walaupun items_data kosong (akan jadi video hitam hening)
-        # Ini mencegah error "Tidak ada frame dirender" jika user cuma tes audio.
-
         # 5. Eksekusi Worker
         self.layer_panel.render_tab.btn_render.setEnabled(False)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
@@ -301,7 +306,6 @@ class EditorController:
         self.worker.sig_progress.connect(self.on_render_progress)
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
-
 
     def on_stop_render_clicked(self):
         if self.worker and self.worker.isRunning():
