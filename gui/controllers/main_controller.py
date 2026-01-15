@@ -105,7 +105,7 @@ class EditorController:
         if hasattr(self.layer_panel, 'tab_audio'):
             self.layer_panel.tab_audio.music_list.btn_import.clicked.connect(self.on_import_audio_clicked)
             self.layer_panel.tab_audio.sfx_list.btn_import.clicked.connect(self.on_import_audio_clicked)
-        self.layer_panel.btn_add_audio.clicked.connect(self.on_add_audio_clicked)
+            self.layer_panel.btn_add_audio.clicked.connect(self.on_add_audio_clicked)
 
         if hasattr(self.layer_panel, 'tab_templates'):
             self.layer_panel.tab_templates.sig_load_template.connect(self.on_template_loaded)
@@ -137,16 +137,25 @@ class EditorController:
         
         if hasattr(self.preview.view, 'sig_dropped'):
             self.preview.view.sig_dropped.connect(self.validate_render_state)
-                       
+
+
     def on_visual_item_moved(self, data):
-        self.setting.set_values(data)
-        if data.get("is_bg", False):
-            self.layer_panel.blockSignals(True)
-            try:
-                self.layer_panel.set_bg_values(data)
-            finally:
-                self.layer_panel.blockSignals(False)
-                
+        """Dipanggil saat item di canvas bergerak (drag mouse)"""
+        
+        # 1. Update Panel Kanan (SettingPanel) - Logika lama
+        if hasattr(self, 'setting'):
+            self.setting.set_values(data)
+            
+        # 2. [PERBAIKAN] Update Panel Kiri (LayerPanel) KHUSUS Background
+        # Ini kuncinya: Panel kiri harus tahu posisi baru X/Y agar tidak mereset ke 0
+        if data.get("is_bg", False) and self.layer_panel:
+            self.layer_panel.set_bg_values(data)
+            
+    def connect_bg_signals(self, bg_item):
+        self.bg_item = bg_item
+        # Sambungkan sinyal dari video_item tadi ke fungsi di atas
+        self.bg_item.signals.sig_moved.connect(self.on_visual_item_moved)
+        
     def recalculate_global_duration(self):
         max_end = 5.0
         for item in self.preview.scene.items():
@@ -280,71 +289,38 @@ class EditorController:
     # 1. LOGIKA HANDLE TOGGLE CAPTION
     def on_caption_enabled(self, enabled):
         scene = self.preview.scene
-        
-        # Cari apakah layer caption sudah ada?
-        caption_item = None
-        for item in scene.items():
-            if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
-                caption_item = item
-                break
+        # Cari layer caption yang sudah ada
+        caption_item = next((i for i in scene.items() if getattr(i, 'name', '') == "CAPTION_LAYER"), None)
         
         if enabled:
             if not caption_item:
-                # Tambahkan ke Layer Panel UI (opsional, visual saja)
-                if hasattr(self.layer_panel, 'add_layer_item_custom'):
-                    self.layer_panel.add_layer_item_custom("CAPTION_LAYER")
-                
-                # Buat Layer Baru jika belum ada
-                caption_item = VideoItem("CAPTION_LAYER", None, None, shape="text")
-                
-                # Default Style Dummy
+                from gui.center_panel.video_item import VideoItem
+                caption_item = VideoItem("CAPTION_LAYER", shape="text")
                 caption_item.settings.update({
                     "content_type": "caption_preview",
-                    "text_content": "CAPTION PREVIEW\n(Drag Me)",
-                    "font_size": 40,
-                    "text_color": "#ffffff",
-                    "frame_w": 800,
-                    "frame_h": 150,
-                    "x": (1080 - 800) / 2, # Center X
-                    "y": 1920 - 250,       # Bottom Y
-                    "lock": False,
-                    "is_paragraph": True,
-                    "stroke_on": True,
-                    "stroke_width": 2,
-                    "stroke_color": "#000000"
+                    "text_content": "TRANSCRIPT HERE",
+                    "frame_w": 800, "frame_h": 120,
+                    "x": (1080 - 800) / 2, "y": 1920 - 300
                 })
-                caption_item.setZValue(9999) # Selalu paling atas
                 scene.addItem(caption_item)
-            
+                caption_item.setZValue(9999) # Selalu di depan
+                
             caption_item.setVisible(True)
             caption_item.setSelected(True)
-            caption_item.refresh_text_render() # Refresh visual
-            
+            caption_item.refresh_text_render()
         else:
-            # Jika disable, sembunyikan saja (jangan dihapus agar posisi tersimpan)
             if caption_item:
                 caption_item.setVisible(False)
-                caption_item.setSelected(False)
 
     # 2. LOGIKA SYNC STYLE (REALTIME)
     def on_caption_style_changed(self, data):
-        # Cari layer caption
-        caption_item = None
-        for item in self.preview.scene.items():
-            if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
-                caption_item = item
-                break
+        caption_item = next((i for i in self.preview.scene.items() if getattr(i, 'name', '') == "CAPTION_LAYER"), None)
         
         if caption_item:
-            # Update properti dummy layer
-            # Mapping key dari caption_tab ke video_item settings
-            if "font_size" in data: caption_item.settings["font_size"] = data["font_size"]
-            if "text_color" in data: caption_item.settings["text_color"] = data["text_color"]
-            if "font" in data: caption_item.settings["font"] = data["font"]
-            if "stroke_width" in data: caption_item.settings["stroke_width"] = data["stroke_width"]
-            if "stroke_color" in data: caption_item.settings["stroke_color"] = data["stroke_color"]
-            
-            caption_item.refresh_text_render() # Redraw
+            # Terapkan SEMUA properti dari data signal
+            caption_item.settings.update(data)
+            # Refresh visual di canvas
+            caption_item.refresh_text_render()
 
     # 3. LOGIKA GENERATE TRANSCRIPT (AssemblyAI)
     def on_generate_transcript(self, options):
@@ -424,14 +400,14 @@ class EditorController:
                     dummy_layer = item
                     break
             
-            margin_v = 50 # Default margin
-            if dummy_layer:
-                # Hitung Margin V (Jarak dari bawah layar ke bawah text box)
-                scene_h = self.preview.scene.sceneRect().height()
-                # Koordinat Y item adalah top-left item
-                item_bottom_y = dummy_layer.y() + dummy_layer.rect().height()
-                margin_v = int(scene_h - item_bottom_y)
-                if margin_v < 0: margin_v = 10
+            caption_layer = next((i for i in self.preview.scene.items() if getattr(i, 'name', '') == "CAPTION_LAYER"), None)
+            margin_v = 70 # Default
+            if caption_layer and caption_layer.isVisible():
+                # Hitung jarak dari bawah canvas ke bottom bounding box caption
+                canvas_h = self.preview.scene.sceneRect().height()
+                item_bottom_y = caption_layer.y() + caption_layer.rect().height()
+                margin_v = int(canvas_h - item_bottom_y)
+                if margin_v < 10: margin_v = 10
 
                 # Generate ASS Content
                 ass_content = make_ass_from_words(

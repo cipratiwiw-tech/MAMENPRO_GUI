@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, 
                              QGridLayout, QLabel, QPushButton, QCheckBox, 
                              QSpinBox, QListWidget, QFrame, QScrollArea, QComboBox, 
-                             QTabWidget, QListWidgetItem, QMenu, QAbstractSpinBox)
+                             QTabWidget, QListWidgetItem, QMenu, QAbstractSpinBox, QDoubleSpinBox)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics
+import math
 
 # Import Panel-Panel Tab
 from gui.left_panel.template_tab import TemplateTab
@@ -43,6 +44,19 @@ class LayerPanel(QWidget):
                 margin: 0px;
             }
             QSpinBox:focus {
+                border: 1px solid #56b6c2;
+                background-color: #1e1e1e;
+            }
+            QDoubleSpinBox {
+                background-color: #2b2b2b;
+                color: #dcdcdc;
+                border: 1px solid #3e4451;
+                border-radius: 2px;
+                padding-left: 0px;  
+                padding-right: 4px; 
+                margin: 0px;
+            }
+            QDoubleSpinBox:focus {
                 border: 1px solid #56b6c2;
                 background-color: #1e1e1e;
             }
@@ -104,19 +118,23 @@ class LayerPanel(QWidget):
         self._style_spinbox(sb, min_v, max_v, suffix)
         return sb
 
-    # --- UI INIT ---
+    def _create_double_spinbox(self, tooltip, min_v, max_v, val, suffix="", step=0.05):
+        """Helper baru untuk input float"""
+        sb = QDoubleSpinBox()
+        sb.setRange(min_v, max_v); sb.setValue(val); sb.setSuffix(suffix)
+        sb.setSingleStep(step)
+        sb.setToolTip(tooltip)
+        sb.setDecimals(2)
+        self._style_spinbox(sb, min_v, max_v, suffix)
+        return sb
+    
+    # --- UI INIT (PATCHED) ---
     def _init_editor_ui(self):
         layout = QVBoxLayout(self.tab_editor)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
         
-        # 1. ATAS: AUDIO & BACKGROUND
-        top_group_container = QWidget()
-        top_group_layout = QVBoxLayout(top_group_container)
-        top_group_layout.setContentsMargins(0, 0, 0, 0)
-        top_group_layout.setSpacing(8)
-
-        # Audio Group (Grid Compact)
+        # --- AUDIO MIXER ---
         self.group_audio = QGroupBox("AUDIO MIXER")
         self.group_audio.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #c678dd; margin-top: 6px; color: #c678dd; }")
         
@@ -138,73 +156,73 @@ class LayerPanel(QWidget):
         audio_grid.addWidget(self._create_label("Vol:"), 0, 2)
         audio_grid.addWidget(self.spn_volume, 0, 3)
         
-        top_group_layout.addWidget(self.group_audio)
+        layout.addWidget(self.group_audio)
 
-        # Background Group
+        # --- BACKGROUND GROUP (WITH VIGNETTE PATCH) ---
         self.group_bg = QGroupBox("BACKGROUND")
         self.group_bg.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #56b6c2; margin-top: 6px; color: #56b6c2; }")
-        
         bg_main_layout = QVBoxLayout(self.group_bg)
-        bg_main_layout.setSpacing(8)
-        bg_main_layout.setContentsMargins(5, 10, 5, 5)
         
-        # Baris Tombol Control
+        # Row Control (Replace & Lock)
         row_ctrl = QHBoxLayout()
-        row_ctrl.setSpacing(5)
-        
         self.chk_bg_toggle = QCheckBox("ON")
         self.chk_bg_toggle.setChecked(True)
         self.chk_bg_toggle.setStyleSheet("font-weight: bold; color: #98c379;")
         self.chk_bg_toggle.toggled.connect(self._on_bg_toggled_internal)
+
+        self.btn_add_bg = QPushButton("Replace BG")
+        self.btn_add_bg.setStyleSheet("background-color: #3e4451; color: white; border-radius: 2px;")
         
-        self.chk_bg_lock = QPushButton("🔓") # Ganti jadi Toggle Button biar lebih rapi
+        self.chk_bg_lock = QPushButton("🔓")
         self.chk_bg_lock.setCheckable(True)
         self.chk_bg_lock.setFixedWidth(30)
         self.chk_bg_lock.setToolTip("Lock Position")
         self.chk_bg_lock.setStyleSheet("background-color: #2b2b2b; border: 1px solid #3e4451;")
-        self.chk_bg_lock.toggled.connect(self._on_bg_lock_toggled)
-
-        self.btn_add_bg = QPushButton("Replace BG")
-        self.btn_add_bg.setCursor(Qt.PointingHandCursor)
-        self.btn_add_bg.setStyleSheet("background-color: #3e4451; color: white; border-radius: 2px;")
 
         row_ctrl.addWidget(self.chk_bg_toggle)
         row_ctrl.addWidget(self.btn_add_bg)
         row_ctrl.addWidget(self.chk_bg_lock)
-        
         bg_main_layout.addLayout(row_ctrl)
 
-        # Grid Parameter Compact
+        # GRID PARAMETER (Lengkap: X, Y, Scale, Blur + Vignette Baru)
         bg_grid = QGridLayout()
         bg_grid.setSpacing(8)
         
+        # Properti Transformasi & Blur
         self.spin_bg_x = self._create_spinbox("Pos X", -3000, 3000, 0, "px")
         self.spin_bg_y = self._create_spinbox("Pos Y", -3000, 3000, 0, "px")
         self.spin_bg_scale = self._create_spinbox("Scale", 1, 1000, 100, "%")
-        self.spn_blur = self._create_spinbox("Blur", 0, 50, 0)
-        self.spn_vignette = self._create_spinbox("Vignette", 0, 100, 0)
+        self.spn_blur = self._create_spinbox("Blur", 0, 100, 0)
 
-        # Row 1: Transform
-        bg_grid.addWidget(self._create_label("X:"), 0, 0)
-        bg_grid.addWidget(self.spin_bg_x, 0, 1)
-        bg_grid.addWidget(self._create_label("Y:"), 0, 2)
-        bg_grid.addWidget(self.spin_bg_y, 0, 3)
+        # Properti Vignette Baru (DoubleSpinBox untuk presisi float)
+        self.spn_vig_strength = self._create_double_spinbox("Strength (0.0-1.0)", 0.0, 1.0, 0.0)
+        self.spn_vig_radius = self._create_double_spinbox("Radius (0.2-1.2)", 0.2, 1.2, 0.8)
+        self.spn_vig_angle = self._create_double_spinbox("Angle (0-360)", 0.0, 360.0, 0.0, "°", step=1.0)
+
+        # Tata Letak Grid (Row 0-3)
+        bg_grid.addWidget(self._create_label("X:"), 0, 0); bg_grid.addWidget(self.spin_bg_x, 0, 1)
+        bg_grid.addWidget(self._create_label("Y:"), 0, 2); bg_grid.addWidget(self.spin_bg_y, 0, 3)
         
-        # Row 2: Zoom & Effects
-        bg_grid.addWidget(self._create_label("Zm:"), 1, 0)
-        bg_grid.addWidget(self.spin_bg_scale, 1, 1)
-        bg_grid.addWidget(self._create_label("Blr:"), 1, 2)
-        bg_grid.addWidget(self.spn_blur, 1, 3)
+        bg_grid.addWidget(self._create_label("Zm:"), 1, 0); bg_grid.addWidget(self.spin_bg_scale, 1, 1)
+        bg_grid.addWidget(self._create_label("Blr:"), 1, 2); bg_grid.addWidget(self.spn_blur, 1, 3)
         
-        # Row 3: Vignette (Single)
-        bg_grid.addWidget(self._create_label("Vig:"), 2, 0)
-        bg_grid.addWidget(self.spn_vignette, 2, 1)
+        bg_grid.addWidget(self._create_label("V.Str:"), 2, 0); bg_grid.addWidget(self.spn_vig_strength, 2, 1)
+        bg_grid.addWidget(self._create_label("V.Rad:"), 2, 2); bg_grid.addWidget(self.spn_vig_radius, 2, 3)
+        
+        bg_grid.addWidget(self._create_label("V.Ang:"), 3, 0); bg_grid.addWidget(self.spn_vig_angle, 3, 1)
 
         bg_main_layout.addLayout(bg_grid)
-        top_group_layout.addWidget(self.group_bg)
-        layout.addWidget(top_group_container)
+        layout.addWidget(self.group_bg)
 
-        # 2. TENGAH: TIMELINE LAYERS
+        # Sinyal: Pastikan semua widget memicu _emit_bg_change
+        inputs = [self.spin_bg_x, self.spin_bg_y, self.spin_bg_scale, self.spn_blur, 
+                  self.spn_vig_strength, self.spn_vig_radius, self.spn_vig_angle]
+        for w in inputs:
+            w.valueChanged.connect(self._emit_bg_change)
+        
+        self.chk_bg_lock.toggled.connect(self._on_bg_lock_toggled)
+
+        # --- TIMELINE ---
         self.mid_container = QGroupBox("TIMELINE")
         self.mid_container.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #e5c07b; margin-top: 6px; color: #e5c07b; }")
         mid_layout = QVBoxLayout(self.mid_container)
@@ -255,7 +273,7 @@ class LayerPanel(QWidget):
         
         layout.addWidget(self.mid_container, stretch=1)
 
-        # 3. BAWAH: TOMBOL ADD CONTENT
+        # --- TOMBOL BAWAH ---
         content_btn_layout = QHBoxLayout()
         content_btn_layout.setSpacing(4)
         
@@ -263,7 +281,6 @@ class LayerPanel(QWidget):
         self.btn_add_text = QPushButton("+ Text")
         self.btn_add_paragraph = QPushButton("+ Para")
         
-        # Initial State Disabled
         for btn in [self.btn_add_content, self.btn_add_text, self.btn_add_paragraph]:
             btn.setFixedHeight(30)
             btn.setCursor(Qt.PointingHandCursor)
@@ -275,26 +292,22 @@ class LayerPanel(QWidget):
         content_btn_layout.addWidget(self.btn_add_paragraph, 1)
         layout.addLayout(content_btn_layout)
 
-        # 4. EXTRA & RENDER
+        # Extra & Render
         self.render_tab = RenderTab()
         layout.addWidget(self.render_tab)
 
-        # Koneksi Signal BG
-        self.spin_bg_x.valueChanged.connect(self._emit_bg_change)
-        self.spin_bg_y.valueChanged.connect(self._emit_bg_change)
-        self.spin_bg_scale.valueChanged.connect(self._emit_bg_change)
-        self.spn_blur.valueChanged.connect(self._emit_bg_change)
-        self.spn_vignette.valueChanged.connect(self._emit_bg_change)
-
     # --- LOGIC HANDLERS ---
     def _emit_bg_change(self):
+        """Kirim state terbaru ke Engine"""
         data = {
             "x": self.spin_bg_x.value(),
             "y": self.spin_bg_y.value(),
             "scale": self.spin_bg_scale.value(),
             "blur": self.spn_blur.value(),
-            "vig": self.spn_vignette.value(),
-            "lock": self.chk_bg_lock.isChecked() 
+            "vig_strength": self.spn_vig_strength.value(),
+            "vig_radius": self.spn_vig_radius.value(),
+            "vig_angle": self.spn_vig_angle.value(),
+            "lock": self.chk_bg_lock.isChecked()
         }
         self.sig_bg_changed.emit(data)
         
@@ -335,34 +348,44 @@ class LayerPanel(QWidget):
             
         # Effects (Locked still allows effects)
         can_edit_effect = visible and is_bg_on
-        self.spn_vignette.setEnabled(can_edit_effect)
+        self.spn_vig_strength.setEnabled(can_edit_effect)
+        self.spn_vig_angle.setEnabled(can_edit_effect)
+        self.spn_vig_radius.setEnabled(can_edit_effect)
         self.spn_blur.setEnabled(can_edit_effect)
 
     def set_bg_values(self, data):
-        self.spin_bg_x.blockSignals(True)
-        self.spin_bg_y.blockSignals(True)
-        self.spin_bg_scale.blockSignals(True)
-        self.spn_blur.blockSignals(True)
-        self.spn_vignette.blockSignals(True)
+        """Update tampilan input box tanpa memicu sinyal balik"""
         
-        if "x" in data: self.spin_bg_x.setValue(int(data["x"]))
-        if "y" in data: self.spin_bg_y.setValue(int(data["y"]))
-        if "scale" in data: self.spin_bg_scale.setValue(int(data["scale"]))
-        if "blur" in data: self.spn_blur.setValue(int(data["blur"]))
-        if "vig" in data: self.spn_vignette.setValue(int(data["vig"]))
+        # LIST WIDGET YANG HARUS DI-FREEZE SEMENTARA
+        widgets = [
+            self.spin_bg_x, self.spin_bg_y, self.spin_bg_scale, self.spn_blur,
+            self.spn_vig_strength, self.spn_vig_radius, self.spn_vig_angle
+        ]
         
-        if "lock" in data: 
-            locked = data["lock"]
-            self.chk_bg_lock.setChecked(locked)
-            self._on_bg_lock_toggled(locked) # Update UI visual
+        # 1. Matikan Sinyal (Block)
+        for w in widgets: w.blockSignals(True)
+        
+        try:
+            # 2. Isi Nilai Terbaru (agar sinkron dengan posisi mouse)
+            if "x" in data: self.spin_bg_x.setValue(int(data["x"]))
+            if "y" in data: self.spin_bg_y.setValue(int(data["y"]))
+            
+            if "scale" in data: self.spin_bg_scale.setValue(int(data["scale"]))
+            if "blur" in data: self.spn_blur.setValue(int(data["blur"]))
+            
+            # Update Vignette
+            if "vig_strength" in data: self.spn_vig_strength.setValue(float(data["vig_strength"]))
+            if "vig_radius" in data: self.spn_vig_radius.setValue(float(data["vig_radius"]))
+            if "vig_angle" in data: self.spn_vig_angle.setValue(float(data["vig_angle"]))
+            
+            if "lock" in data: 
+                self.chk_bg_lock.setChecked(data["lock"])
+                self._on_bg_lock_toggled(data["lock"])
+                
+        finally:
+            # 3. Hidupkan Sinyal Kembali (Unblock)
+            for w in widgets: w.blockSignals(False)
 
-        self.spin_bg_x.blockSignals(False)
-        self.spin_bg_y.blockSignals(False)
-        self.spin_bg_scale.blockSignals(False)
-        self.spn_blur.blockSignals(False)
-        self.spn_vignette.blockSignals(False)
-        self.show_bg_controls() # Refresh state
-        
     def set_content_button_enabled(self, enabled):
         self.btn_add_content.setEnabled(enabled)
         self.btn_add_text.setEnabled(enabled)

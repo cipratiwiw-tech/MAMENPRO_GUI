@@ -32,7 +32,7 @@ def make_ass_from_words(
     outline=2,
     outline_color="&H00000000",
     align=2,   # 2 = bottom-center
-    margin_v=120
+    margin_v=50
 ):
     ...
 

@@ -4,8 +4,8 @@ from PySide6.QtGui import (QImage, QPixmap, QColor, QBrush, QPen, QFont,
                            QPainter, QTextOption, QPainterPath, QFontMetrics, 
                            QRadialGradient, QLinearGradient, QTransform)
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsBlurEffect, QGraphicsPixmapItem
-from PySide6.QtCore import Qt, QRectF, QPointF, QSizeF
-
+from PySide6.QtCore import Qt, QRectF, QPointF, QSizeF, Signal
+from PySide6.QtCore import Qt, QObject, Signal
 # Import PyAVClip jika tersedia
 try:
     from engine.pyav_engine import PyAVClip
@@ -354,45 +354,61 @@ class VideoItem(QGraphicsRectItem):
         self.refresh_text_render()
 
     def refresh_text_render(self):
-        """Me-render teks menjadi QPixmap agar performa preview lancar"""
         s = self.settings
         w, h = max(1, int(self.rect().width())), max(1, int(self.rect().height()))
-        
         canvas = QImage(w, h, QImage.Format_ARGB32)
         canvas.fill(Qt.transparent)
         
         p = QPainter(canvas)
         p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         
-        if s.get("bg_on", False):
-             p.setBrush(QColor(s.get("bg_color", "#000000"))); p.setPen(Qt.NoPen)
-             p.drawRect(0, 0, w, h)
-            
+        # 1. Font Setup
         font = QFont(s.get("font", "Arial"), s.get("font_size", 40))
+        if s.get("font_weight") == "Bold": font.setBold(True)
+        if s.get("font_weight") == "Light": font.setWeight(QFont.Light)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, s.get("letter_spacing", 0))
         p.setFont(font)
-        
-        if s.get("is_paragraph"):
-            p.setPen(QColor(s.get("text_color", "#ffffff")))
-            opt = QTextOption(Qt.AlignCenter if s.get("alignment") == "center" else Qt.AlignLeft)
-            opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-            p.drawText(QRectF(10, 10, w-20, h-20), s.get("text_content", ""), opt)
-        else:
-            # Render Teks Judul dengan Stroke
-            fm = QFontMetrics(font)
+
+        # 2. Background Box (Template 5 & 6)
+        if s.get("bg_on"):
+            bg_col = QColor(s.get("bg_color", "#000000"))
+            bg_col.setAlpha(s.get("bg_opacity", 255))
+            p.setBrush(bg_col)
+            p.setPen(Qt.NoPen)
+            radius = s.get("bg_rounded", 0)
+            p.drawRoundedRect(0, 0, w, h, radius, radius)
+
+        # 3. Shadow (Template 3 & 10)
+        txt = s.get("text_content", "PREVIEW TEXT")
+        if s.get("shadow_on"):
+            p.setPen(QColor(0, 0, 0, 150))
+            p.drawText(QRectF(3, 3, w, h), Qt.AlignCenter, txt) # Manual shadow offset
+
+        # 4. Main Text / Stroke
+        if s.get("stroke_on"):
             path = QPainterPath()
-            txt = s.get("text_content", "")
-            tw, th = fm.horizontalAdvance(txt), fm.capHeight()
+            fm = QFontMetrics(font)
+            tw = fm.horizontalAdvance(txt)
+            th = fm.capHeight()
             path.addText((w - tw)/2, (h + th)/2, font, txt)
             
-            if s.get("stroke_on"):
-                pen = QPen(QColor(s.get("stroke_color", "black")), s.get("stroke_width", 2))
-                p.setPen(pen); p.drawPath(path)
-            
-            p.fillPath(path, QColor(s.get("text_color", "white")))
+            p.setPen(QPen(QColor(s.get("stroke_color", "black")), s.get("stroke_width", 2)))
+            p.drawPath(path)
+            # Highlight logic (Template 4)
+            fill_color = QColor(s.get("highlight_c", s.get("text_color", "white"))) if s.get("karaoke_on") else QColor(s.get("text_color", "white"))
+            p.fillPath(path, fill_color)
+        else:
+            p.setPen(QColor(s.get("text_color", "#ffffff")))
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, txt)
         
+        # 5. Bounding Guide (Hanya saat editor aktif)
+        if s.get("content_type") == "caption_preview":
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor("#61afef"), 1, Qt.DashLine))
+            p.drawRect(0, 0, w-1, h-1)
+
         p.end()
-        self.current_pixmap = QPixmap.fromImage(canvas)
-        self.update()
+        self.setPixmap(QPixmap.fromImage(canvas))
 
     # --- VIDEO ENGINE BRIDGE ---
     def _load_as_video(self, path):
@@ -462,30 +478,16 @@ class VideoItem(QGraphicsRectItem):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.is_resizing:
-            diff = self.mapFromScene(event.scenePos()) - self.mapFromScene(self.resize_start_pos)
-            new_w = max(50, self.resize_start_rect.width() + diff.x())
-            new_h = max(50, self.resize_start_rect.height() + diff.y())
+        if self.settings.get("lock", False): event.ignore(); return
+        if self._is_dragging:
+            delta = event.scenePos() - event.lastScenePos()
+            self.settings["x"] += delta.x()
+            self.settings["y"] += delta.y()
+            self._sync_visuals()
             
-            old_center_scene = self.mapToScene(self.rect().center())
-
-            self.prepareGeometryChange()
-            self.setRect(0, 0, new_w, new_h)
-            
-            self.settings["frame_w"], self.settings["frame_h"] = int(new_w), int(new_h)
-            
-            new_center_local = self.rect().center()
-            self.setTransformOriginPoint(new_center_local)
-            
-            new_center_scene = self.mapToScene(new_center_local)
-            
-            offset = old_center_scene - new_center_scene
-            self.moveBy(offset.x(), offset.y())
-
-            if self.settings.get("is_paragraph"): 
-                self.refresh_text_render()
-            
-            self.update()
+            # [PENTING] Paksa scene memancarkan sinyal 'changed' agar controller mengupdate spinbox
+            self.scene().update() 
+            event.accept()
         else:
             super().mouseMoveEvent(event)
 
@@ -495,18 +497,21 @@ class VideoItem(QGraphicsRectItem):
         if not is_locked:
             self.setFlag(QGraphicsItem.ItemIsMovable, True)
         super().mouseReleaseEvent(event)
+        
 
-# [PENTING] Tambahkan import 'math'
-import math
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsBlurEffect, QGraphicsPixmapItem
-from PySide6.QtGui import QRadialGradient, QBrush, QColor, QTransform
+# --- Helper Class untuk Signal ---
+class ItemSignals(QObject):
+    sig_moved = Signal(dict)
 
-# ... (Class VideoItem biarkan apa adanya) ...
 
 class BackgroundItem(VideoItem):
     def __init__(self, path, scene_rect):
+        # Gunakan inisialisasi asli agar struktur Container & ZValue tetap benar
         super().__init__("BG", path, None)
         self.setZValue(-500)
+        
+        # --- INIT SIGNAL (DARI PATCH) ---
+        self.signals = ItemSignals()
         
         self.scene_w = scene_rect.width()
         self.scene_h = scene_rect.height()
@@ -607,42 +612,35 @@ class BackgroundItem(VideoItem):
         s = self.settings
         cw, ch = self.scene_w, self.scene_h
         
-        # 1. Scale & Posisi
+        # 1. POSISI & SKALA (LOGIKA STABIL)
         pw, ph = self.current_pixmap.width(), self.current_pixmap.height()
         base_scale = 1.0
         if pw > 0 and ph > 0:
             scale_w = cw / pw
             scale_h = ch / ph
-            fit_mode = s.get("fit", "cover")
-            if fit_mode == "contain": base_scale = min(scale_w, scale_h)
-            else: base_scale = max(scale_w, scale_h)
+            base_scale = max(scale_w, scale_h) if s.get("fit") == "cover" else min(scale_w, scale_h)
         
-        final_scale = base_scale * (s["scale"] / 100.0)
-        center_x = cw / 2 + s.get("x", 0)
-        center_y = ch / 2 + s.get("y", 0)
-
+        final_scale = base_scale * (s.get("scale", 100) / 100.0)
+        
+        # Penempatan absolut di tengah canvas + offset user
         self.pixmap_item.setScale(final_scale)
-        self.pixmap_item.setPos(center_x, center_y)
+        self.pixmap_item.setPos(cw / 2 + s.get("x", 0), ch / 2 + s.get("y", 0))
 
-        # 2. VIGNETTE
+        # 2. VIGNETTE (UPDATE PARAMETER)
         strength = float(s.get("vig_strength", 0.0))
-        if strength == 0 and s.get("vig", 0) > 0:
-            strength = s.get("vig", 0) / 100.0
-
-        if strength > 0.01:
+        if strength > 0.001:
             self.vignette_item.setVisible(True)
-            
-            radius_param = float(s.get("vig_radius", 0.8))
-            angle_deg = float(s.get("vig_angle", 0.0))
+            radius_param = float(s.get("vig_radius", 0.8)) # 0.2 - 1.2
+            angle_deg = float(s.get("vig_angle", 0.0))    # 0 - 360
             
             max_dim = max(cw, ch)
             grad_radius = max_dim * radius_param
             
+            # Hitung titik fokus berdasarkan angle
             angle_rad = math.radians(angle_deg)
-            offset_dist = max_dim * 0.3 
-            
-            focal_x = (cw / 2) - math.cos(angle_rad) * offset_dist
-            focal_y = (ch / 2) - math.sin(angle_rad) * offset_dist
+            offset_dist = max_dim * 0.4 
+            focal_x = (cw / 2) + math.cos(angle_rad) * offset_dist
+            focal_y = (ch / 2) + math.sin(angle_rad) * offset_dist
             
             grad = QRadialGradient(cw / 2, ch / 2, grad_radius, focal_x, focal_y)
             
@@ -681,11 +679,22 @@ class BackgroundItem(VideoItem):
 
     def mouseMoveEvent(self, event):
         if self.settings.get("lock", False): event.ignore(); return
+        
         if self._is_dragging:
+            # 1. Hitung Delta
             delta = event.scenePos() - event.lastScenePos()
             self.settings["x"] += delta.x()
             self.settings["y"] += delta.y()
+            
+            # 2. Update Visual
             self._sync_visuals()
+            
+            # 3. [PATCHED] Kirim Sinyal ke Panel agar Angka ikut berubah
+            data = self.settings.copy()
+            # Pastikan flag identitas item terbawa
+            data["is_bg"] = True 
+            self.signals.sig_moved.emit(data)
+
             event.accept()
         else:
             super().mouseMoveEvent(event)
@@ -694,7 +703,8 @@ class BackgroundItem(VideoItem):
         if self.settings.get("lock", False): event.ignore(); return
         self._is_dragging = False
         self.setCursor(Qt.OpenHandCursor)
-        self._sync_visuals()
+        self._sync_visuals() # Re-enable blur if needed
+        
         if self.isSelected():
             self.setSelected(False)
             self.setSelected(True)
