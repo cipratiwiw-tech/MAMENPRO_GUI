@@ -25,11 +25,11 @@ def ass_color_from_hex(hex_color):
 
 def make_ass_from_words(
     words,
-    words_per_event=3,
+    words_per_event=3, # Default chunk size
     font="Arial",
-    size=64,
-    color="&H00FFFFFF",
-    outline=3,
+    size=40,
+    color="&H00FFFFFF", # Ingat format ASS warnanya BBGGRR (terbalik dari RGB)
+    outline=2,
     outline_color="&H00000000",
     align=2,   # 2 = bottom-center
     margin_v=120
@@ -39,10 +39,9 @@ def make_ass_from_words(
     header = f"""
 [Script Info]
 ScriptType: v4.00+
-
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BorderStyle,Outline,Alignment
-Style: Default,{font},{size},{color},{color},1,{outline},2
+Style: Default,{font},{size},{color},{outline_color},1,{outline},2
 
 [Events]
 Format: Layer, Start, End, Style, Text

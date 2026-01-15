@@ -1,9 +1,11 @@
+import os
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QGridLayout, 
                              QLabel, QSpinBox, QPushButton, QComboBox, 
                              QTextEdit, QScrollArea, QCheckBox, QHBoxLayout, 
                              QFontComboBox, QLineEdit, QColorDialog, QAbstractSpinBox)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QFontMetrics
+from dotenv import load_dotenv
 
 class CaptionTab(QScrollArea):
     sig_generate_caption = Signal(dict) # Kirim opsi generate caption
@@ -96,8 +98,14 @@ class CaptionTab(QScrollArea):
         grid.setSpacing(8)
         grid.setContentsMargins(5, 10, 5, 5)
         
+        # [FIX LOGIC] Baca API Key dari .env
+        env_path = os.path.join(os.getcwd(), "engine", "caption", ".env")
+        load_dotenv(env_path)
+        saved_key = os.getenv("ASSEMBLYAI_API_KEY", "")
+
         # API Key Row
         self.txt_api_key = QLineEdit()
+        self.txt_api_key.setText(saved_key) # [FIX] Set Text Otomatis
         self.txt_api_key.setPlaceholderText("Paste API Key here...")
         self.txt_api_key.setEchoMode(QLineEdit.Password)
         self.txt_api_key.setStyleSheet("background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451; border-radius: 2px;")
@@ -115,9 +123,10 @@ class CaptionTab(QScrollArea):
         self.combo_lang.addItems(["Indonesia", "English"])
         self.combo_lang.setStyleSheet("background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451;")
         
-        self.btn_generate = QPushButton("⚡ Generate")
-        self.btn_generate.setStyleSheet("background-color: #d19a66; color: #282c34; font-weight: bold; border-radius: 2px;")
-        self.btn_generate.clicked.connect(self._emit_generate)
+        self.btn_generate = QPushButton("GENERATE / PREVIEW CAPTION")
+        self.btn_generate.setFixedHeight(30)
+        self.btn_generate.setStyleSheet("background-color: #d19a66; color: #21252b; font-weight: bold; border: none; border-radius: 3px;")
+        grid.addWidget(self.btn_generate, 4, 0, 1, 2)
         
         grid.addWidget(self._create_label("Lang:"), 1, 0)
         grid.addWidget(self.combo_lang, 1, 1)

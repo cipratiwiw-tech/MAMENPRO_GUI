@@ -2,13 +2,41 @@
 import os
 import subprocess
 import tempfile
-
+import av
 from engine.caption.assemblyai import assembly_upload, assembly_transcribe
 from engine.caption.ass_builder import make_ass_from_words
 from engine.caption.subtitle_renderer import burn_subtitle
 from engine.caption.lang_detect import detect_language
+from engine.caption.assemblyai import assembly_upload, assembly_transcribe
 
+# [TAMBAHKAN FUNGSI INI]
+def get_transcript_data(video_path):
+    """
+    Hanya mengambil data kata dari audio tanpa merender video.
+    Returns: List of dict {'word': 'Halo', 'start': 0.5, 'end': 1.0}
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_audio = os.path.join(tmp, "audio.wav")
+        
+        # 1. Ekstrak Audio
+        if not extract_audio(video_path, tmp_audio):
+            print("⚠️ Tidak ada audio.")
+            return []
 
+        # 2. Deteksi Bahasa
+        lang = detect_language(tmp_audio)
+        if lang not in ("id", "en"):
+            lang = "id"
+
+        # 3. Transcribe via AssemblyAI
+        try:
+            upload_url = assembly_upload(tmp_audio)
+            words = assembly_transcribe(upload_url, language_code=lang)
+            return words
+        except Exception as e:
+            print(f"Error Transcribe: {e}")
+            return []
+        
 def extract_audio(video_path, wav_path):
     # Cek audio dulu sebelum diekstrak
     with av.open(video_path) as container:
@@ -68,3 +96,5 @@ def apply_caption(
             f.write(ass_text)
 
         burn_subtitle(video_path, tmp_ass, output_path)
+
+

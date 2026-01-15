@@ -94,6 +94,9 @@ class RenderWorker(QThread):
             node_feathered = f"[fth{input_idx}]"
             node_scaled = f"[sc{input_idx}]"
             
+            node_opacity = f"[op{input_idx}]"
+            node_overlay = f"[ov{input_idx}]"
+            
             # 1. SETPTS
             filter_parts.append(f"{current_in_label}setpts=PTS-STARTPTS+({start_t}/TB){node_pts}")
             last_processed = node_pts

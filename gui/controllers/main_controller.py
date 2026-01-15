@@ -11,6 +11,8 @@ from gui.center_panel.video_item import VideoItem, BackgroundItem
 from engine.caption.caption_flow import apply_caption
 from gui.utils.bg_service import BackgroundService
 from engine.render_engine import RenderWorker
+from engine.caption.caption_flow import apply_caption, get_transcript_data
+from gui.right_panel.caption_tab import CaptionTab
 
 # [BARU] Nama file config
 CONFIG_FILE = "user_config.json"
@@ -27,11 +29,14 @@ class EditorController:
         self.audio_tracks = []
         self.worker = None
         self.temp_files = [] # Init temp files list
+        self.transcript_data = [] # Menyimpan data asli transkrip
+        self.caption_style = {}   # Menyimpan settingan style
         
         self._connect_signals()
         # Load Config saat aplikasi mulai
         self.load_app_config()
         self.validate_render_state()
+
 
     # --- [BAGIAN BARU: SAVE & LOAD CONFIG] ---
     def load_app_config(self):
@@ -105,7 +110,10 @@ class EditorController:
         self.engine.sig_time_changed.connect(self.update_ui_from_engine)
         self.engine.sig_state_changed.connect(self.update_play_button_icon)
         
-        self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
+        if hasattr(self.setting, 'caption_tab'):
+             self.setting.caption_tab.btn_generate.clicked.connect(self.on_toggle_caption_preview)
+        
+        
         self.setting.sig_bulk_requested.connect(self.on_bulk_process_start)
         # Update list layer di Bulk Tab setiap kali ada layer dibuat/dihapus
         self.layer_panel.sig_layer_created.connect(self.update_bulk_tab_layers)
@@ -130,7 +138,12 @@ class EditorController:
     def on_visual_item_moved(self, data):
         self.setting.set_values(data)
         if data.get("is_bg", False):
-            self.layer_panel.set_bg_values(data)
+            # [FIX] Block signals sementara untuk mencegah Infinite Loop (Canvas -> UI -> Canvas)
+            self.layer_panel.blockSignals(True)
+            try:
+                self.layer_panel.set_bg_values(data)
+            finally:
+                self.layer_panel.blockSignals(False)
                 
     def recalculate_global_duration(self):
         max_end = 5.0
@@ -151,6 +164,9 @@ class EditorController:
         if not selected or not isinstance(selected[0], VideoItem): return
         item = selected[0]
         
+        # [FIX] Cek apakah item ini Background atau Video Biasa
+        is_bg = isinstance(item, BackgroundItem)
+
         if "start_time" in data or "end_time" in data:
             new_start = float(data.get("start_time", item.start_time))
             new_end = float(data.get("end_time", item.end_time if item.end_time is not None else new_start + 5.0))
@@ -159,19 +175,28 @@ class EditorController:
             self.recalculate_global_duration()
             item.apply_global_time(self.engine.current_time)
         
+        # Filter data untuk update settings
         filtered_data = {k: v for k, v in data.items() if k not in ['start_time', 'end_time']}
         item.settings.update(filtered_data)
 
-        if data.get("type") == "text":
-            if "rotation" in data: item.setRotation(data["rotation"])
-            item.refresh_text_render()
+        # [FIX] LOGIKA PEMISAH ANTARA BG DAN VIDEO BIASA
+        if is_bg:
+            # Khusus Background: Jangan pernah panggil item.setPos()!
+            # Panggil method khusus untuk update visual internal (Offset, Scale, Blur, dll)
+            item.update_bg_settings(filtered_data)
         else:
-            if "x" in data and "y" in data: item.setPos(data["x"], data["y"])
-            if "frame_rot" in data: item.setRotation(data["frame_rot"])
-            if "frame_w" in data and "frame_h" in data:
-                item.setRect(0, 0, data["frame_w"], data["frame_h"])
-                item.setTransformOriginPoint(item.rect().center())
+            # Item Biasa: Handle posisi fisik, rotasi, dan teks
+            if data.get("type") == "text":
+                if "rotation" in data: item.setRotation(data["rotation"])
+                item.refresh_text_render()
+            else:
+                if "x" in data and "y" in data: item.setPos(data["x"], data["y"])
+                if "frame_rot" in data: item.setRotation(data["frame_rot"])
+                if "frame_w" in data and "frame_h" in data:
+                    item.setRect(0, 0, data["frame_w"], data["frame_h"])
+                    item.setTransformOriginPoint(item.rect().center())
             item.update() 
+            
         self.layer_panel.set_delete_enabled(not item.settings.get("lock"))
 
     def on_canvas_selection_update_ui(self):
@@ -236,6 +261,8 @@ class EditorController:
         item.setSelected(True)
         self.setting.set_values(item.settings)
         self.recalculate_global_duration()
+        
+        return item  # <--- [PENTING] Tambahkan ini agar bisa diakses caption
 
         # Fungsi Buka Folder
     def on_open_folder_clicked(self):
@@ -459,12 +486,80 @@ class EditorController:
         icon = QStyle.SP_MediaPause if is_playing else QStyle.SP_MediaPlay
         self.preview.btn_play.setIcon(self.view.style().standardIcon(icon))
 
-    def on_generate_caption(self, data):
+    # Place this method inside EditorController class in main_controller.py
+
+    def on_toggle_caption_preview(self):
+        print("[DEBUG] Toggle Caption Preview Clicked")
+        
+        # 1. Get Data from UI
+        data = self.setting.caption_tab.get_data()
+        
+        # 2. Check/Create Dummy Layer
+        dummy_layer = None
         for item in self.preview.scene.items():
-            if isinstance(item, VideoItem) and item.file_path:
-                output = os.path.splitext(item.file_path)[0] + "_captioned.mp4"
-                apply_caption(video_path=item.file_path, output_path=output, preset="karaoke")
+            if hasattr(item, 'name') and item.name == "CAPTION PREVIEW":
+                dummy_layer = item
                 break
+        
+        if not dummy_layer:
+            self.layer_panel.add_layer_item_custom("CAPTION PREVIEW")
+            dummy_layer = VideoItem("CAPTION PREVIEW", None, 10, shape="text")
+            
+            # Set Duration (Global)
+            total_dur = self.engine.duration if self.engine.duration > 0 else 10
+            dummy_layer.set_time_range(0, total_dur)
+            
+            # Set Position
+            scene_rect = self.preview.scene.sceneRect()
+            dummy_layer.setPos(scene_rect.width()/2 - 300, scene_rect.height() - 200)
+            
+            self.preview.scene.addItem(dummy_layer)
+            dummy_layer.setZValue(999)
+            dummy_layer.setSelected(True)
+
+        # 3. Update Style
+        style = {
+            "content_type": "text",
+            "text_content": "PREVIEW CAPTION\n(This text will change during render)",
+            "font_size": data.get("font_size", 40),
+            "text_color": data.get("text_color", "#ffffff"),
+            "stroke_on": True,
+            "stroke_width": data.get("stroke_width", 2),
+            "stroke_color": data.get("stroke_color", "#000000"),
+            "alignment": "center",
+            "is_paragraph": True,
+            "frame_w": 600,
+            "frame_h": 150
+        }
+        
+        dummy_layer.settings.update(style)
+        if hasattr(dummy_layer, 'refresh_text_render'):
+            dummy_layer.refresh_text_render()
+            
+        self.preview.scene.update()
+        
+        # 4. Save style for render time
+        self.caption_style = style
+        
+        # 5. Trigger Transcript Download (Background)
+        # Check if transcript already exists
+        if not self.transcript_data:
+             # Find video item
+            target_item = None
+            for item in self.preview.scene.items():
+                if isinstance(item, VideoItem) and item.file_path and not item.settings.get("is_bg"):
+                    target_item = item
+                    break
+            
+            if target_item:
+                print("⏳ Downloading transcript in background...")
+                # Note: For better UI, use a Thread here. 
+                # For now, we call it directly (might freeze UI for a few seconds)
+                try:
+                    self.transcript_data = get_transcript_data(target_item.file_path)
+                    print(f"✅ Transcript loaded: {len(self.transcript_data)} words")
+                except Exception as e:
+                    print(f"❌ Failed to get transcript: {e}")
 
     def on_bg_properties_changed(self, data):
         if self.bg_item: self.bg_item.update_bg_settings(data)

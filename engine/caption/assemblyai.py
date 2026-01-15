@@ -3,7 +3,10 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# [FIX] Load .env secara spesifik dari folder engine/caption/
+current_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(current_dir, ".env")
+load_dotenv(env_path)
 
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 if not ASSEMBLYAI_API_KEY:
