@@ -69,6 +69,9 @@ class VideoItem(QGraphicsRectItem):
         
         if file_path: 
             self.set_content(file_path)
+            
+        # [BARU] Variable untuk status Drag & Drop Highlight
+        self.is_drop_target = False
 
     # --- SINKRONISASI GEOMETRI ---
     def itemChange(self, change, value):
@@ -86,6 +89,8 @@ class VideoItem(QGraphicsRectItem):
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         
         # 1. Masking Content agar tidak keluar dari Frame Rect
+        # Kita gunakan save/restore tambahan di sini agar clipping hanya berefek pada konten
+        painter.save()
         path = QPainterPath()
         path.addRect(self.rect())
         painter.setClipPath(path)
@@ -101,7 +106,7 @@ class VideoItem(QGraphicsRectItem):
             painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
 
             if is_text:
-                # Teks digambar apa adanya karena sudah di-render ke pixmap di refresh_text_render
+                # Teks digambar apa adanya
                 painter.drawPixmap(0, 0, self.current_pixmap)
             else:
                 # Media menggunakan transformasi Scale & Content Rotation
@@ -116,13 +121,40 @@ class VideoItem(QGraphicsRectItem):
                 painter.scale(scale, scale)
                 painter.translate(-img_w/2, -img_h/2)
                 painter.drawPixmap(0, 0, self.current_pixmap)
-                
+        
+        # Restore pertama untuk melepas Clipping Path & Transformasi Konten
+        painter.restore() 
+
+        # 3. [MODIFIKASI] Border & Handle Seleksi
+        # Tambahkan logika visual untuk Drop Target
+        if hasattr(self, 'is_drop_target') and self.is_drop_target:
+            # Highlight Merah/Oranye Tebal saat file ditahan di atas item ini
+            pen = QPen(QColor("#ff9f43"), 4)
+            pen.setJoinStyle(Qt.MiterJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.rect())
+            
+            # Label "DROP HERE" / "LEPAS DI SINI"
+            painter.setPen(QColor("white"))
+            font = painter.font()
+            font.setBold(True)
+            font.setPointSize(12) # Ukuran disesuaikan
+            painter.setFont(font)
+            painter.drawText(self.rect(), Qt.AlignCenter, "LEPAS DI SINI")
+
+        elif self.isSelected() and not self.settings.get("lock", False): 
+            # Hanya muncul jika item dipilih dan tidak dikunci
+            self._paint_ui_helpers(painter)
+            
+        # Restore terakhir untuk painter.save() yang paling atas
         painter.restore()
 
-        # 3. Border & Handle Seleksi (Hanya muncul jika item dipilih dan tidak dikunci)
-        if self.isSelected() and not self.settings["lock"]: 
-            self._paint_ui_helpers(painter)
-
+    def set_drop_highlight(self, active):
+        if self.is_drop_target != active:
+            self.is_drop_target = active
+            self.update() # Trigger repaint
+            
     # --- INTERAKSI MOUSE (RESIZING) ---
     def _get_handle_at(self, pos):
         """Cek apakah mouse berada di atas handle resize (kanan bawah)"""
