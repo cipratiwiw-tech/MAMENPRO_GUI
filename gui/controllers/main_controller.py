@@ -106,6 +106,10 @@ class EditorController:
         self.engine.sig_state_changed.connect(self.update_play_button_icon)
         
         self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
+        self.setting.sig_bulk_requested.connect(self.on_bulk_process_start)
+        # Update list layer di Bulk Tab setiap kali ada layer dibuat/dihapus
+        self.layer_panel.sig_layer_created.connect(self.update_bulk_tab_layers)
+        self.layer_panel.sig_delete_layer.connect(self.update_bulk_tab_layers)
         
         # --- CONNECT RENDER TAB BUTTONS ---
         self.layer_panel.render_tab.btn_render.clicked.connect(self.on_render_clicked)
@@ -473,3 +477,23 @@ class EditorController:
     def on_canvas_item_moved(self, data): self.setting.set_values(data)
     def on_template_loaded(self, data): pass
     def on_save_chroma_preset(self): pass
+    
+    def update_bulk_tab_layers(self, *args):
+        """Mengambil nama layer teks dari scene untuk dikirim ke Bulk Tab"""
+        text_layers = []
+        for item in self.preview.scene.items():
+            # Cek jika item adalah VideoItem dan tipe kontennya text
+            if hasattr(item, 'settings') and item.settings.get("content_type") == "text":
+                text_layers.append(item.name)
+        
+        self.setting.bulk_tab.update_layer_list(text_layers)
+
+    def on_bulk_process_start(self, data):
+        """Logika Placeholder untuk memproses Bulk"""
+        print(f"[BULK] Memulai proses untuk {len(data['raw_data'])} item.")
+        print(f"[BULK] Target Layer: {data['target_layer']}")
+        
+        # Di sini Anda bisa menambahkan logika loop untuk:
+        # 1. Update text layer
+        # 2. Render frame/video
+        # 3. Simpan output

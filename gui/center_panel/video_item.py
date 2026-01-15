@@ -294,9 +294,32 @@ class VideoItem(QGraphicsRectItem):
         self.update()
 
     def set_text_content(self, text, is_paragraph=False):
+        # [FIX] Inisialisasi nilai default agar tidak KeyError saat refresh_text_render
+        text_defaults = {
+            "font": "Segoe UI",
+            "font_size": 40 if is_paragraph else 60,
+            "text_color": "#ffffff",
+            "bg_on": False,
+            "bg_color": "#000000",
+            "stroke_on": False,
+            "stroke_width": 2,
+            "stroke_color": "#000000",
+            "alignment": "center",
+            "line_spacing": 100
+        }
+        
+        # Masukkan default jika key belum ada
+        for k, v in text_defaults.items():
+            if k not in self.settings:
+                self.settings[k] = v
+
+        # Update konten utama
         self.settings.update({
-            "content_type": "text", "text_content": text, "is_paragraph": is_paragraph
+            "content_type": "text", 
+            "text_content": text, 
+            "is_paragraph": is_paragraph
         })
+        
         # Text default duration 5s
         self.set_time_range(self.start_time, 5.0)
         self.refresh_text_render()

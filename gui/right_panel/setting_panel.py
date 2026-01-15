@@ -3,10 +3,12 @@ from PySide6.QtCore import Signal
 from gui.right_panel.media_tab import MediaTab
 from gui.right_panel.text_tab import TextTab
 from gui.right_panel.caption_tab import CaptionTab
+from gui.right_panel.bulk_tab import BulkTab
 
 class SettingPanel(QWidget):
     on_setting_change = Signal(dict)
-
+    sig_bulk_requested = Signal(dict)
+    
     def __init__(self):
         super().__init__()
         
@@ -23,10 +25,12 @@ class SettingPanel(QWidget):
         self.media_tab = MediaTab()
         self.text_tab = TextTab()
         self.caption_tab = CaptionTab()
+        self.bulk_tab = BulkTab()
         
         self.tabs.addTab(self.media_tab, "Media/Frame")
         self.tabs.addTab(self.text_tab, "Text/Para")
-        self.tabs.addTab(self.caption_tab, "Caption")
+        self.tabs.addTab(self.caption_tab, "Caption")        
+        self.tabs.addTab(self.bulk_tab, "Bulk")
         
         self.layout.addWidget(self.tabs)
         self._connect_signals()
@@ -35,6 +39,7 @@ class SettingPanel(QWidget):
         # [FIX] Gunakan sinyal terpadu dari Tab, jangan connect manual per widget
         self.media_tab.sig_media_changed.connect(self._emit_media_change)
         self.text_tab.sig_text_changed.connect(self._emit_text_change)
+        self.bulk_tab.sig_start_bulk.connect(self.sig_bulk_requested.emit)
 
     def _emit_media_change(self, data):
         data["type"] = "media"
