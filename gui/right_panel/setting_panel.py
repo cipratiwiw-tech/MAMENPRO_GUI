@@ -9,6 +9,13 @@ class SettingPanel(QWidget):
 
     def __init__(self):
         super().__init__()
+        
+        # [UPGRADE] Set batas minimal dan maksimal
+        # Agar panel kanan tidak pernah kurang dari 340px (mencegah clipping)
+        # Dan tidak lebih dari 450px (mencegah terlalu lebar)
+        self.setMinimumWidth(340)
+        self.setMaximumWidth(450)
+        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         

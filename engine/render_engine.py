@@ -78,31 +78,84 @@ class RenderWorker(QThread):
 
             rotation = item.get('rot', 0)
             opacity = item.get('opacity', 100) / 100.0
+           
+
+            sf_l = int(item.get('sf_l', 0))
+            sf_r = int(item.get('sf_r', 0))
+            
+            # [MODIFIKASI]
+            f_l = int(item.get('f_l', 0))
+            f_r = int(item.get('f_r', 0))
+            f_t = int(item.get('f_t', 0))
+            f_b = int(item.get('f_b', 0))
 
             node_pts = f"[pts{input_idx}]"
+            node_cropped = f"[crop{input_idx}]"
+            node_feathered = f"[fth{input_idx}]"
             node_scaled = f"[sc{input_idx}]"
-            node_rotated = f"[rt{input_idx}]"
-            node_opacity = f"[op{input_idx}]"
-            node_overlay = f"[lay{input_idx}]"
-
+            
             # 1. SETPTS
             filter_parts.append(f"{current_in_label}setpts=PTS-STARTPTS+({start_t}/TB){node_pts}")
             last_processed = node_pts
 
-            # 2. SCALE & CROP
+            # 2. CROP
+            if sf_l > 0 or sf_r > 0:
+                filter_parts.append(
+                    f"{last_processed}crop=iw-{sf_l}-{sf_r}:ih:{sf_l}:0{node_cropped}"
+                )
+                last_processed = node_cropped
+            
+            # 3. INDEPENDENT FEATHER (GEQ Filter)
+            # Logika GEQ: Jika pixel berada di area feather, kurangi alpha-nya.
+            # Rumus Alpha = 255 * min(1, JarakKiri/FL, JarakKanan/FR, JarakAtas/FT, JarakBawah/FB)
+            if f_l > 0 or f_r > 0 or f_t > 0 or f_b > 0:
+                # Kita ubah format ke RGBA dulu
+                # Lalu gunakan geq untuk memanipulasi channel Alpha (a)
+                # 'X' dan 'Y' adalah koordinat pixel saat ini. 'W' dan 'H' adalah lebar/tinggi gambar.
+                
+                # Buat string expression untuk GEQ
+                # gt(A,B) artinya A > B ? 1 : 0
+                alpha_expr = "255"
+                
+                # Factor Kiri: X / f_l
+                if f_l > 0: alpha_expr = f"min({alpha_expr}, X/{f_l})"
+                
+                # Factor Kanan: (W-X) / f_r
+                if f_r > 0: alpha_expr = f"min({alpha_expr}, (W-X)/{f_r})"
+                
+                # Factor Atas: Y / f_t
+                if f_t > 0: alpha_expr = f"min({alpha_expr}, Y/{f_t})"
+                
+                # Factor Bawah: (H-Y) / f_b
+                if f_b > 0: alpha_expr = f"min({alpha_expr}, (H-Y)/{f_b})"
+                
+                # Clamp max 1 (untuk normalisasi jika pake min(1,...)) -> tapi karena kita mulai dari 255 dan bagi,
+                # kita perlu pastikan nilai tidak melebihi 255. min() sudah handle itu.
+                # Namun X/f_l bisa > 1. Jadi kita harus min(1, ...) lalu kali 255.
+                
+                # REVISI RUMUS YANG LEBIH AMAN:
+                # 255 * min(1, val1, val2, ...)
+                
+                terms = ["1"]
+                if f_l > 0: terms.append(f"X/{f_l}")
+                if f_r > 0: terms.append(f"(W-X)/{f_r}")
+                if f_t > 0: terms.append(f"Y/{f_t}")
+                if f_b > 0: terms.append(f"(H-Y)/{f_b}")
+                
+                min_expr = f"min({','.join(terms)})"
+                geq_filter = f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*{min_expr}'"
+
+                filter_parts.append(
+                    f"{last_processed}format=rgba,{geq_filter}{node_feathered}"
+                )
+                last_processed = node_feathered
+
+            # 4. SCALE
             filter_parts.append(
                 f"{last_processed}scale=w={vis_w}:h={vis_h}:force_original_aspect_ratio=increase,"
                 f"crop={vis_w}:{vis_h}{node_scaled}"
             )
             last_processed = node_scaled
-
-            # 3. ROTATE
-            if rotation != 0:
-                rad = rotation * (math.pi / 180)
-                filter_parts.append(
-                    f"{last_processed}rotate={rad}:ow='rotw({rad})':oh='roth({rad})':c=none{node_rotated}"
-                )
-                last_processed = node_rotated
 
             # 4. OPACITY
             if opacity < 1.0:

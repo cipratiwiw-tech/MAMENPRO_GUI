@@ -326,14 +326,21 @@ class EditorController:
                 vh = int(item.rect().height())
                 px = int(item.x())
                 py = int(item.y())
-
+                
+            sf_l = item.settings.get('sf_l', 0)
+            sf_r = item.settings.get('sf_r', 0)
             items_data.append({
                 'path': render_path, 'is_image': is_static_image,
                 'x': px, 'y': py, 'visual_w': vw, 'visual_h': vh,
                 'rot': int(item.rotation()), 
                 'opacity': item.settings.get('opacity', 100),
                 'z_value': item.zValue(),
-                'start_time': item.start_time, 'end_time': item.end_time
+                'start_time': item.start_time, 'end_time': item.end_time,
+                'sf_l': sf_l, 'sf_r': sf_r,
+                'f_l': item.settings.get('f_l', 0),
+                'f_r': item.settings.get('f_r', 0),
+                'f_t': item.settings.get('f_t', 0),
+                'f_b': item.settings.get('f_b', 0),
             })
 
         ratio_mult = scale_factor 

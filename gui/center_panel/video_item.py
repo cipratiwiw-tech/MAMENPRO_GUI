@@ -1,10 +1,11 @@
 import os
 from PySide6.QtGui import (QImage, QPixmap, QColor, QBrush, QPen, QFont, 
-                           QPainter, QTextOption, QPainterPath, QFontMetrics, QRadialGradient)
+                           QPainter, QTextOption, QPainterPath, QFontMetrics, 
+                           QRadialGradient, QLinearGradient) # [FIX] Import Wajib Ada
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsBlurEffect
 from PySide6.QtCore import Qt, QRectF, QPointF, QSizeF
 
-# Import PyAVClip jika tersedia, jika tidak sediakan placeholder agar tidak crash
+# Import PyAVClip jika tersedia
 try:
     from engine.pyav_engine import PyAVClip
 except ImportError:
@@ -13,95 +14,96 @@ except ImportError:
 class VideoItem(QGraphicsRectItem):
     """
     Item utama untuk Media (Video/Gambar) dan Teks pada Canvas.
-    Mendukung seleksi, resizing manual, dan sinkronisasi settings ke UI.
     """
     HANDLE_SIZE = 12
+    # --- [FIX 1] DEFINISI HANDLES (Wajib Ada) ---
     Handles = {
-        "TL": 0, "T": 1, "TR": 2, "L": 3, "R": 4,
-        "BL": 5, "B": 6, "BR": 7, "NONE": -1
+        "NONE": 0, "TL": 1, "TM": 2, "TR": 3,
+        "ML": 4, "MR": 5, "BL": 6, "BM": 7, "BR": 8
     }
 
     def __init__(self, name, file_path=None, parent=None, shape="portrait"):
-        # Default Dimensions berdasarkan Shape
+        # Default Dimensions
         w, h = 540, 960
         if shape == "landscape": w, h = 960, 540 
         elif shape == "square": w, h = 720, 720
-        elif shape == "text": w, h = 400, 200 
-
+        
         super().__init__(0, 0, w, h, parent)
         
-        self.name = name 
+        self.setAcceptHoverEvents(True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+
+        self.name = name
         self.file_path = file_path
-        self.current_pixmap = None 
-        self.clip = None      
-            
-        #  Atribut Waktu (Start & End)
-        self.start_time = 0.0
-        self.end_time = 5.0  # Default 5 detik awal
-        self.source_duration = 0.0 # Durasi asli file sumber
         
-        # Status apakah layer sedang dalam rentang waktu tayang
-        self.is_in_time_range = True
-
-        self.current_handle = self.Handles["NONE"]
+        # --- [FIX 2] INISIALISASI VARIABEL STATE (Wajib Ada) ---
+        self.is_in_time_range = True  # Default aktif agar terlihat saat baru di-add
         self.is_resizing = False
-        self.resize_start_pos = QPointF()
-        self.resize_start_rect = QRectF()
-        
+        self.current_handle = self.Handles["NONE"]
+        self.resize_start_pos = None
+        self.resize_start_rect = None
         self.is_drop_target = False
-
-        # Status Resizing
-        self.current_handle = self.Handles["NONE"]
-        self.is_resizing = False
-        self.resize_start_pos = QPointF()
-        self.resize_start_rect = QRectF()
-
-        # --- DICTIONARY SETTINGS (Sumber data utama untuk Controller) ---
+        
+        self.start_time = 0.0
+        self.end_time = 5.0
+        
         self.settings = {
             "x": 0, "y": 0, 
             "frame_w": int(w), "frame_h": int(h), "frame_rot": 0, 
             "lock": False,
             "scale": 100, 
-            "rot": 0,           # Rotasi konten di dalam frame
+            "rot": 0,
             "opacity": 100,
+            "sf_l": 0, "sf_r": 0, 
+            "f_l": 0, "f_r": 0, "f_t": 0, "f_b": 0, # Feather 4 Sisi
             "shape": shape, 
             "content_type": "media",
-            
-            # [BARU] Simpan info waktu ke settings agar bisa dirender/disave
             "start_time": self.start_time,
             "end_time": self.end_time,
-            
-            "is_paragraph": False, "text_content": "Teks Baru", "font": "Arial", "font_size": 60,
-            "text_color": "#ffffff", "bg_on": False, "bg_color": "#000000",
-            "stroke_on": False, "stroke_width": 2, "stroke_color": "#000000",
-            "shadow_on": False, "shadow_color": "#555555",
-            "alignment": "center"
+            "chroma_key": "#00ff00",
+            "similarity": 100, "smoothness": 10,
+            "spill_r": 0, "spill_g": 0, "spill_b": 0
         }
-        
-        # Konfigurasi Interaksi
-        self.setFlags(QGraphicsRectItem.ItemIsMovable | 
-                      QGraphicsRectItem.ItemIsSelectable | 
-                      QGraphicsRectItem.ItemSendsGeometryChanges)
-        self.setAcceptHoverEvents(True) 
-        self.setZValue(1)
-        self.setTransformOriginPoint(self.rect().center())
-        
-        if file_path: 
-            self.set_content(file_path)
 
-    # --- SINKRONISASI GEOMETRI ---
+        self.current_pixmap = None 
+        self.clip = None
+        
+        if file_path and PyAVClip:
+            try:
+                self.clip = PyAVClip(file_path)
+                self.end_time = self.clip.duration
+                self.settings["end_time"] = self.end_time
+            except Exception as e:
+                print(f"[VideoItem] Error loading clip: {e}")
+
+        if name.startswith("Text Layer"):
+            self.settings["content_type"] = "text"
+            self.settings["text_content"] = "New Text"
+            self._update_text_pixmap()
+
+    def _update_text_pixmap(self):
+        pm = QPixmap(1000, 200)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setPen(Qt.white)
+        font = QFont("Arial", 60, QFont.Bold)
+        p.setFont(font)
+        p.drawText(pm.rect(), Qt.AlignCenter, self.settings.get("text_content", "Text"))
+        p.end()
+        self.current_pixmap = pm 
+   
+
     def itemChange(self, change, value):
-        """Otomatis update koordinat di settings saat item digeser di canvas"""
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            self.settings["x"] = int(self.pos().x())
-            self.settings["y"] = int(self.pos().y())
-        if change == QGraphicsItem.ItemRotationHasChanged:
-            self.settings["frame_rot"] = int(self.rotation())
+        if change == QGraphicsItem.ItemPositionChange:
+            self.settings["x"] = value.x()
+            self.settings["y"] = value.y()
         return super().itemChange(change, value)
 
     # --- LOGIKA RENDERING (VISIBILITY) ---
     def paint(self, painter, option, widget):
-        # 1. Cek Status
+        # 1. Cek Status (Sekarang aman karena variabel sudah di-init di __init__)
         should_draw_content = self.is_in_time_range
         is_selected = self.isSelected()
         
@@ -109,83 +111,103 @@ class VideoItem(QGraphicsRectItem):
         if not should_draw_content and not is_selected:
             return 
 
-        # --- [FIX 1] SIMPAN STATE PAINTER UTAMA ---
-        # Agar transformasi konten tidak bocor ke UI Helper
+        # Simpan state painter utama
         painter.save() 
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         
-        # 2. GAMBAR KONTEN (HANYA JIKA DALAM DURASI)
+        # 2. GAMBAR KONTEN
         if should_draw_content:
-            # Masking Content agar tidak keluar dari Frame Rect
+            # Masking agar tidak keluar dari Frame Rect
             path = QPainterPath()
             path.addRect(self.rect())
             painter.setClipPath(path)
             
-            # Placeholder (Kotak abu-abu jika pixmap kosong)
+            # Placeholder Background
             if not self.current_pixmap:
                 painter.setBrush(QColor(40, 40, 40, 255))
                 painter.drawRect(self.rect())
 
-            # Gambar Pixmap (Video/Gambar/Teks)
+            # Gambar Pixmap
             if self.current_pixmap and not self.current_pixmap.isNull():
-                # --- [FIX 2] ISOLASI TRANSFORMASI KONTEN ---
-                painter.save() # Save khusus untuk konten
+                painter.save() 
                 
                 is_text = self.settings.get("content_type") == "text"
                 painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
 
                 if is_text:
-                    painter.drawPixmap(0, 0, self.current_pixmap)
+                    painter.drawPixmap(self.rect().toRect(), self.current_pixmap)
                 else:
                     scale = self.settings.get("scale", 100) / 100.0
                     content_rot = self.settings.get("rot", 0)
                     
-                    img_w = self.current_pixmap.width()
-                    img_h = self.current_pixmap.height()
+                    # Feather Settings
+                    f_l = self.settings.get("f_l", 0); f_r = self.settings.get("f_r", 0)
+                    f_t = self.settings.get("f_t", 0); f_b = self.settings.get("f_b", 0)
                     
-                    # Pindahkan origin painter ke tengah RECT (Bounding Box)
+                    # Crop Settings (Source)
+                    sf_l = self.settings.get("sf_l", 0); sf_r = self.settings.get("sf_r", 0)
+                    orig_w = self.current_pixmap.width(); orig_h = self.current_pixmap.height()
+                    src_w = max(1, orig_w - sf_l - sf_r); src_h = orig_h
+
+                    # --- LOGIKA STRETCH KE FRAME ---
+                    target_w = self.rect().width()
+                    target_h = self.rect().height()
+
+                    # Transformasi
                     painter.translate(self.rect().center())
-                    
-                    # Terapkan transformasi konten (Rotate & Scale)
                     painter.rotate(content_rot)
                     painter.scale(scale, scale)
+                    painter.translate(-target_w/2, -target_h/2) # Geser origin ke pojok kiri atas TARGET
                     
-                    # Geser balik setengah ukuran GAMBAR agar gambar berada di tengah origin
-                    painter.translate(-img_w/2, -img_h/2)
+                    # Gambar: Pakai 3 Argumen (Target, Pixmap, Source) agar STRETCH
+                    target_rect = QRectF(0, 0, target_w, target_h)
+                    source_rect = QRectF(sf_l, 0, src_w, src_h)
                     
-                    painter.drawPixmap(0, 0, self.current_pixmap)
-                
-                painter.restore() # Restore setelah gambar konten, matrix painter kembali bersih
+                    painter.drawPixmap(target_rect, self.current_pixmap, source_rect)
+                    
+                    # Feather Effect (Digambar di atasnya)
+                    if f_l > 0 or f_r > 0 or f_t > 0 or f_b > 0:
+                        painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+                        if f_l > 0:
+                            grad = QLinearGradient(0, 0, f_l, 0)
+                            grad.setColorAt(0, QColor(0,0,0,255)); grad.setColorAt(1, QColor(0,0,0,0))
+                            painter.fillRect(0, 0, f_l, target_h, grad)
+                        if f_r > 0:
+                            grad = QLinearGradient(target_w - f_r, 0, target_w, 0)
+                            grad.setColorAt(0, QColor(0,0,0,0)); grad.setColorAt(1, QColor(0,0,0,255))
+                            painter.fillRect(target_w - f_r, 0, f_r, target_h, grad)
+                        if f_t > 0:
+                            grad = QLinearGradient(0, 0, 0, f_t)
+                            grad.setColorAt(0, QColor(0,0,0,255)); grad.setColorAt(1, QColor(0,0,0,0))
+                            painter.fillRect(0, 0, target_w, f_t, grad)
+                        if f_b > 0:
+                            grad = QLinearGradient(0, target_h - f_b, 0, target_h)
+                            grad.setColorAt(0, QColor(0,0,0,0)); grad.setColorAt(1, QColor(0,0,0,255))
+                            painter.fillRect(0, target_h - f_b, target_w, f_b, grad)
+                            
+                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+                painter.restore()
             
-            # Matikan clipping sebelum menggambar UI luar
             painter.setClipping(False)
 
-        # 3. UI OVERLAY & SELECTION (SELALU GAMBAR JIKA SELECTED)
-        # Karena kita sudah restore() di atas, UI ini digambar pada koordinat asli self.rect()
-        # tanpa terpengaruh zoom/rotasi konten.
-        
+        # 3. UI Helper (Selection, Handles, dll)
         if self.is_drop_target:
-            # Efek Drop Target
             pen = QPen(QColor("#ff9f43"), 4); pen.setJoinStyle(Qt.MiterJoin)
             painter.setPen(pen); painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.rect())
-            painter.setPen(QColor("white")); font = painter.font(); font.setBold(True); font.setPointSize(12)
-            painter.setFont(font); painter.drawText(self.rect(), Qt.AlignCenter, "LEPAS DI SINI")
+            painter.setPen(QColor("white"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "LEPAS DI SINI")
 
         elif is_selected and not self.settings.get("lock", False): 
-            # Gambar Border Putus-putus & Handle Resize
             self._paint_ui_helpers(painter)
-            
-            # Indikator visual jika layer sedang "Mati" (Di luar durasi)
             if not should_draw_content:
                 painter.setBrush(QBrush(QColor(255, 255, 255, 20), Qt.FDiagPattern))
                 painter.setPen(Qt.NoPen)
                 painter.drawRect(self.rect())
-                
-                painter.setPen(QColor("#ff5555")) # Merah terang
-                painter.drawText(self.rect().topLeft() + QPointF(5, -5), f"OFF (Start: {self.start_time}s)")
+                painter.setPen(QColor("#ff5555"))
+                painter.drawText(self.rect().topLeft() + QPointF(5, -5), "OFF")
 
-        # Restore utama
         painter.restore()
     
     # --- [CORE FIX] LOGIKA WAKTU (TANPA SETVISIBLE FALSE) ---
