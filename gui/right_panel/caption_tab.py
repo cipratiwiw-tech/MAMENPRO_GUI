@@ -1,59 +1,88 @@
 import os
+import sys
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QGridLayout, 
                              QLabel, QSpinBox, QPushButton, QComboBox, 
                              QTextEdit, QScrollArea, QCheckBox, QHBoxLayout, 
-                             QFontComboBox, QLineEdit, QColorDialog, QAbstractSpinBox)
+                             QFontComboBox, QLineEdit, QColorDialog, QAbstractSpinBox, QApplication)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QFont, QFontMetrics, QColor
 from dotenv import load_dotenv
 
 class CaptionTab(QScrollArea):
+    # Sinyal komunikasi ke Main Window / Controller
     sig_generate_caption = Signal(dict) # Kirim opsi generate caption
     sig_style_changed = Signal(dict)    # Kirim perubahan style real-time
+    sig_enable_toggled = Signal(bool)   # [BARU] Signal untuk toggle layer
 
     def __init__(self):
         super().__init__()
         self.setWidgetResizable(True)
-        container = QWidget()
-        container.setStyleSheet("background-color: #23272e;") 
-        self.layout = QVBoxLayout(container)
-        self.layout.setSpacing(12)
-        self.layout.setContentsMargins(8, 8, 8, 8)
         
-        # [STYLE] Compact Input (Sama seperti tab lain)
+        # --- 0. INISIALISASI VARIABEL DEFAULT ---
+        # Penting agar tidak error saat widget style dibuat
+        self.text_color_hex = "#ffffff"
+        self.bg_color_hex = "#000000"
+        self.stroke_color_hex = "#000000"
         self.spinbox_style = """
-            QSpinBox {
-                background-color: #2b2b2b;
-                color: #dcdcdc;
-                border: 1px solid #3e4451;
-                border-radius: 2px;
-                padding-left: 0px;  
-                padding-right: 4px; 
-                margin: 0px;
-            }
-            QSpinBox:focus {
-                border: 1px solid #56b6c2;
-                background-color: #1e1e1e;
-            }
+            QSpinBox { background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451; border-radius: 2px; }
+            QSpinBox:focus { border: 1px solid #61afef; }
         """
 
-        # Inisialisasi State Warna Default
-        self.text_color_hex = "#ffffff"
-        self.bg_color_hex = "#000000" # Biasanya transparan/hitam
-        self.stroke_color_hex = "#000000"
-
-        # Init UI Sections
-        self._init_auto_caption_group()
-        self._init_editor_group()
-        self._init_style_group()
+        # --- 1. SETUP CONTAINER UTAMA ---
+        main_container = QWidget()
+        main_container.setStyleSheet("background-color: #23272e;")
+        self.main_layout = QVBoxLayout(main_container)
         
-        self.layout.addStretch()
-        self.setWidget(container)
-        
-        # Connect signals internal
-        self._connect_style_signals()
+        # --- 2. [BARU] MASTER TOGGLE (Paling Atas) ---
+        self.chk_enable_caption = QCheckBox("✅ ENABLE CAPTION LAYER")
+        self.chk_enable_caption.setStyleSheet("""
+            QCheckBox { font-weight: bold; color: #abb2bf; font-size: 14px; padding: 8px; border-bottom: 1px solid #3e4451; }
+            QCheckBox::indicator { width: 18px; height: 18px; }
+            QCheckBox::checked { color: #98c379; }
+        """)
+        self.main_layout.addWidget(self.chk_enable_caption)
 
-    # --- HELPER FUNCTIONS (Konsisten dengan Media/Text Tab) ---
+        # --- 3. [BARU] CONTENT WRAPPER ---
+        # Semua widget settingan dimasukkan ke sini agar bisa di-disable massal
+        self.content_wrapper = QWidget()
+        self.layout = QVBoxLayout(self.content_wrapper) # self.layout tetap digunakan fungsi child
+        self.layout.setContentsMargins(0,0,0,0)
+        
+        # --- 4. INISIALISASI GRUP WIDGET ---
+        self._init_api_group()      # Grup API Key & Generate
+        self._init_editor_group()   # Grup Editor Transcript
+        self._init_style_group()    # Grup Styling (Font, Color, dll)
+        
+        # Masukkan wrapper ke layout utama
+        self.main_layout.addWidget(self.content_wrapper)
+        self.main_layout.addStretch()
+        
+        self.setWidget(main_container)
+        
+        # --- 5. STATE AWAL & KONEKSI ---
+        # Default State: Mati (sesuai checkbox default unchecked)
+        self.content_wrapper.setEnabled(False)
+        self.chk_enable_caption.setChecked(False)
+        self.chk_enable_caption.setText("❌ CAPTION DISABLED")
+
+        # Connections
+        self.chk_enable_caption.toggled.connect(self._on_master_toggle)
+        self.btn_generate.clicked.connect(self._emit_generate) # Connect tombol generate
+        self._connect_style_signals() # Connect sinyal style
+    
+    # --- LOGIC MASTER TOGGLE ---
+    def _on_master_toggle(self, checked):
+        """Logika saat tombol Enable ditekan"""
+        self.content_wrapper.setEnabled(checked)
+        self.sig_enable_toggled.emit(checked)
+        
+        # Feedback Visual
+        if checked:
+            self.chk_enable_caption.setText("✅ ENABLE CAPTION LAYER")
+        else:
+            self.chk_enable_caption.setText("❌ CAPTION DISABLED")
+
+    # --- HELPER FUNCTIONS ---
     def _create_label(self, text):
         lbl = QLabel(text)
         lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -90,7 +119,8 @@ class CaptionTab(QScrollArea):
         return btn
 
     # --- UI SECTIONS ---
-    def _init_auto_caption_group(self):
+    def _init_api_group(self):
+        """Sebelumnya _init_auto_caption_group, di-rename agar konsisten dengan patch"""
         group = QGroupBox("AUTO GENERATION (ASSEMBLY AI)")
         group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #d19a66; margin-top: 6px; color: #d19a66; }")
         
@@ -98,14 +128,14 @@ class CaptionTab(QScrollArea):
         grid.setSpacing(8)
         grid.setContentsMargins(5, 10, 5, 5)
         
-        # [FIX LOGIC] Baca API Key dari .env
+        # Load API Key dari .env
         env_path = os.path.join(os.getcwd(), "engine", "caption", ".env")
         load_dotenv(env_path)
         saved_key = os.getenv("ASSEMBLYAI_API_KEY", "")
 
         # API Key Row
         self.txt_api_key = QLineEdit()
-        self.txt_api_key.setText(saved_key) # [FIX] Set Text Otomatis
+        self.txt_api_key.setText(saved_key) 
         self.txt_api_key.setPlaceholderText("Paste API Key here...")
         self.txt_api_key.setEchoMode(QLineEdit.Password)
         self.txt_api_key.setStyleSheet("background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451; border-radius: 2px;")
@@ -126,11 +156,13 @@ class CaptionTab(QScrollArea):
         self.btn_generate = QPushButton("GENERATE / PREVIEW CAPTION")
         self.btn_generate.setFixedHeight(30)
         self.btn_generate.setStyleSheet("background-color: #d19a66; color: #21252b; font-weight: bold; border: none; border-radius: 3px;")
-        grid.addWidget(self.btn_generate, 4, 0, 1, 2)
         
         grid.addWidget(self._create_label("Lang:"), 1, 0)
         grid.addWidget(self.combo_lang, 1, 1)
-        grid.addWidget(self.btn_generate, 1, 2)
+        grid.addWidget(self.btn_generate, 1, 2) # Tombol di baris ke-1, kolom 2
+        
+        # Tombol generate full width di baris 4 (opsional layout)
+        grid.addWidget(self.btn_generate, 2, 0, 1, 3) 
         
         self.layout.addWidget(group)
 
@@ -165,7 +197,7 @@ class CaptionTab(QScrollArea):
         grid.setSpacing(8)
         grid.setContentsMargins(5, 10, 5, 5)
 
-        # 1. Activation Checkbox (Top)
+        # 1. Activation Checkbox (Preview)
         self.chk_active = QCheckBox("Enable Preview")
         self.chk_active.setStyleSheet("color: #e06c75; font-weight: bold;")
         grid.addWidget(self.chk_active, 0, 0, 1, 2)
@@ -180,12 +212,12 @@ class CaptionTab(QScrollArea):
         # 3. Font Attributes
         self.font_combo = QFontComboBox()
         self.font_combo.setFont(QFont("Segoe UI", 9))
-        self.font_combo.setStyleSheet("background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451; border: none;")
+        self.font_combo.setStyleSheet("background-color: #2b2b2b; color: #dcdcdc; border: none;")
         
         self.spn_size = self._create_spinbox(8, 200, 24, " px")
         
         grid.addWidget(self._create_label("Font:"), 1, 0)
-        grid.addWidget(self.font_combo, 1, 1, 1, 3) # Span across
+        grid.addWidget(self.font_combo, 1, 1, 1, 3) 
         
         grid.addWidget(self._create_label("Size:"), 2, 0)
         grid.addWidget(self.spn_size, 2, 1)
@@ -207,36 +239,33 @@ class CaptionTab(QScrollArea):
         self.chk_stroke = QCheckBox("Stroke")
         self.chk_stroke.setStyleSheet("color: #abb2bf;")
         self.spn_stroke = self._create_spinbox(0, 20, 0, "px")
+        
         self.btn_stroke_color = self._create_color_btn(self.stroke_color_hex)
         self.btn_stroke_color.clicked.connect(lambda: self._pick_color("stroke"))
         
         grid.addWidget(self.chk_stroke, 3, 0)
         grid.addWidget(self.spn_stroke, 3, 1)
-        
-        # Stroke color ditaruh di bawah atau layout yang pas
-        # Agar rapi, kita buat baris baru untuk stroke color jika sempit
-        # Atau taruh di sebelah spinbox stroke jika muat.
-        # Kita taruh di row 4 (bawah BG color)
-        
-        grid.addWidget(self._create_label("Str Color:"), 4, 2)
-        grid.addWidget(self.btn_stroke_color, 4, 3)
+        grid.addWidget(self._create_label("Str Color:"), 3, 2)
+        grid.addWidget(self.btn_stroke_color, 3, 3)
 
         self.layout.addWidget(group)
 
-    # --- LOGIC ---
+    # --- LOGIC METHODS ---
     def _pick_color(self, target):
         c = QColorDialog.getColor()
         if c.isValid():
             hex_c = c.name()
+            style_sheet = f"background-color: {hex_c}; border: 1px solid #5c6370; border-radius: 2px;"
+            
             if target == "text":
                 self.text_color_hex = hex_c
-                self.btn_text_color.setStyleSheet(f"background-color: {hex_c}; border: 1px solid #5c6370; border-radius: 2px;")
+                self.btn_text_color.setStyleSheet(style_sheet)
             elif target == "bg":
                 self.bg_color_hex = hex_c
-                self.btn_bg_color.setStyleSheet(f"background-color: {hex_c}; border: 1px solid #5c6370; border-radius: 2px;")
+                self.btn_bg_color.setStyleSheet(style_sheet)
             elif target == "stroke":
                 self.stroke_color_hex = hex_c
-                self.btn_stroke_color.setStyleSheet(f"background-color: {hex_c}; border: 1px solid #5c6370; border-radius: 2px;")
+                self.btn_stroke_color.setStyleSheet(style_sheet)
             
             self._emit_style_update()
 
@@ -274,11 +303,8 @@ class CaptionTab(QScrollArea):
         self.sig_style_changed.emit(data)
 
 if __name__ == "__main__":
-    import sys
-    from PySide6.QtWidgets import QApplication
-
     app = QApplication(sys.argv)
     window = CaptionTab()
-    window.resize(300, 600)
+    window.resize(300, 700)
     window.show()
     sys.exit(app.exec())

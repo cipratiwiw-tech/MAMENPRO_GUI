@@ -16,8 +16,10 @@ class RenderWorker(QThread):
         self.canvas_h = height
         self.audio_tracks = audio_tracks if audio_tracks is not None else []
         self.is_stopped = False
-        self.process = None # [BARU] Simpan instance subprocess
-
+        self.process = None # [BARU] Simpan instance subprocess.
+        self.caption_data = caption_data
+        self.subtitle_file = subtitle_file # [BARU]
+        
     def stop(self):
         """Dipanggil dari Controller saat tombol Stop diklik"""
         self.is_stopped = True
@@ -43,8 +45,9 @@ class RenderWorker(QThread):
         
         input_idx = 0
 
+        # --- LOOP PROCESS VISUAL ITEMS ---
         for item in sorted_items:
-            # Cek stop sebelum menambah input (meski yang krusial adalah kill process)
+            # Cek stop
             if self.is_stopped: break
             
             file_path = item['path']
@@ -57,7 +60,7 @@ class RenderWorker(QThread):
                 print(f"[SKIP] File tidak ditemukan: {file_path}")
                 continue
 
-            # Loop image = Infinite Stream (Penyebab render tidak berhenti jika tanpa -t)
+            # Input logic
             if is_image:
                 inputs.extend(['-loop', '1', '-i', file_path])
             else:
@@ -76,14 +79,11 @@ class RenderWorker(QThread):
             start_t = float(start_raw) if start_raw is not None else 0.0
             end_t = float(end_raw) if end_raw is not None else self.duration
 
-            rotation = item.get('rot', 0)
             opacity = item.get('opacity', 100) / 100.0
-           
-
+            
             sf_l = int(item.get('sf_l', 0))
             sf_r = int(item.get('sf_r', 0))
             
-            # [MODIFIKASI]
             f_l = int(item.get('f_l', 0))
             f_r = int(item.get('f_r', 0))
             f_t = int(item.get('f_t', 0))
@@ -108,37 +108,8 @@ class RenderWorker(QThread):
                 )
                 last_processed = node_cropped
             
-            # 3. INDEPENDENT FEATHER (GEQ Filter)
-            # Logika GEQ: Jika pixel berada di area feather, kurangi alpha-nya.
-            # Rumus Alpha = 255 * min(1, JarakKiri/FL, JarakKanan/FR, JarakAtas/FT, JarakBawah/FB)
+            # 3. FEATHER (GEQ Filter)
             if f_l > 0 or f_r > 0 or f_t > 0 or f_b > 0:
-                # Kita ubah format ke RGBA dulu
-                # Lalu gunakan geq untuk memanipulasi channel Alpha (a)
-                # 'X' dan 'Y' adalah koordinat pixel saat ini. 'W' dan 'H' adalah lebar/tinggi gambar.
-                
-                # Buat string expression untuk GEQ
-                # gt(A,B) artinya A > B ? 1 : 0
-                alpha_expr = "255"
-                
-                # Factor Kiri: X / f_l
-                if f_l > 0: alpha_expr = f"min({alpha_expr}, X/{f_l})"
-                
-                # Factor Kanan: (W-X) / f_r
-                if f_r > 0: alpha_expr = f"min({alpha_expr}, (W-X)/{f_r})"
-                
-                # Factor Atas: Y / f_t
-                if f_t > 0: alpha_expr = f"min({alpha_expr}, Y/{f_t})"
-                
-                # Factor Bawah: (H-Y) / f_b
-                if f_b > 0: alpha_expr = f"min({alpha_expr}, (H-Y)/{f_b})"
-                
-                # Clamp max 1 (untuk normalisasi jika pake min(1,...)) -> tapi karena kita mulai dari 255 dan bagi,
-                # kita perlu pastikan nilai tidak melebihi 255. min() sudah handle itu.
-                # Namun X/f_l bisa > 1. Jadi kita harus min(1, ...) lalu kali 255.
-                
-                # REVISI RUMUS YANG LEBIH AMAN:
-                # 255 * min(1, val1, val2, ...)
-                
                 terms = ["1"]
                 if f_l > 0: terms.append(f"X/{f_l}")
                 if f_r > 0: terms.append(f"(W-X)/{f_r}")
@@ -160,17 +131,36 @@ class RenderWorker(QThread):
             )
             last_processed = node_scaled
 
-            # 4. OPACITY
+            # 5. OPACITY
             if opacity < 1.0:
                 filter_parts.append(f"{last_processed}format=rgba,colorchannelmixer=aa={opacity}{node_opacity}")
                 last_processed = node_opacity
 
-            # 5. OVERLAY
+            # 6. OVERLAY
             filter_parts.append(
                 f"{last_out_label}{last_processed}overlay={pos_x}:{pos_y}:"
                 f"enable='between(t,{start_t:.3f},{end_t:.3f})'{node_overlay}"
             )
             last_out_label = node_overlay
+
+        # --- [NEW] SUBTITLE PROCESSING ---
+        # Logika ini dipasang setelah loop visual selesai, agar subtitle ada di paling atas (top layer)
+        # Menggunakan getattr untuk safety jika self.subtitle_file belum di-init
+        sub_file = getattr(self, 'subtitle_file', None)
+        
+        if sub_file and os.path.exists(sub_file):
+            # Escape path untuk Windows (FFmpeg filter butuh escape khusus pada backslash dan colon)
+            # Contoh: C:\Path -> C\:/Path
+            sub_path_escaped = sub_file.replace("\\", "/").replace(":", "\\:")
+            
+            next_label = "[v_subbed]"
+            
+            # Pasang filter subtitles ke chain terakhir (last_out_label)
+            filter_parts.append(f"{last_out_label}subtitles='{sub_path_escaped}'{next_label}")
+            
+            # Update output label terakhir menjadi video yang sudah ada subtitlenya
+            last_out_label = next_label
+            print(f"[RENDER] Subtitle burned: {sub_file}")
 
         # --- AUDIO ---
         audio_cmds = []
@@ -201,43 +191,9 @@ class RenderWorker(QThread):
         cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p'])
         cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
         
-        # [SOLUSI UTAMA] Paksa berhenti sesuai durasi timeline!
-        # Tanpa ini, gambar yang di-loop akan membuat render berjalan selamanya.
+        # Paksa berhenti sesuai durasi timeline
         cmd.extend(['-t', str(self.duration)])
         
         cmd.append(self.output_path)
         
         self._run_process(cmd)
-
-    def _run_process(self, cmd):
-        try:
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            # [MODIFIKASI] Simpan ke self.process
-            self.process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                startupinfo=startupinfo,
-                encoding='utf-8', errors='replace'
-            )
-            
-            # Communicate akan block thread ini sampai selesai atau di-kill
-            stdout, stderr = self.process.communicate()
-            
-            # Cek status berhenti
-            if self.is_stopped:
-                self.sig_finished.emit(False, "Render Stopped by User.")
-            elif self.process.returncode == 0:
-                self.sig_finished.emit(True, f"Render Selesai!\nSaved to: {self.output_path}")
-            else:
-                self.sig_finished.emit(False, f"Error FFmpeg:\n{stderr[-600:]}")
-                print("FFMPEG LOG:", stderr)
-
-        except Exception as e:
-            if not self.is_stopped: # Jangan lapor error jika memang kita yang stop
-                self.sig_finished.emit(False, str(e))

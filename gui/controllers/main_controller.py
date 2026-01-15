@@ -8,13 +8,15 @@ from PySide6.QtGui import QDesktopServices
 
 from manager.media_manager import MediaManager
 from gui.center_panel.video_item import VideoItem, BackgroundItem
-from engine.caption.caption_flow import apply_caption
+from engine.caption.caption_flow import apply_caption, get_transcript_data
 from gui.utils.bg_service import BackgroundService
 from engine.render_engine import RenderWorker
-from engine.caption.caption_flow import apply_caption, get_transcript_data
 from gui.right_panel.caption_tab import CaptionTab
 
-# [BARU] Nama file config
+# [BARU] Import untuk generate subtitle ASS
+from engine.caption.ass_builder import make_ass_from_words
+
+# Nama file config
 CONFIG_FILE = "user_config.json"
 
 class EditorController:
@@ -37,8 +39,13 @@ class EditorController:
         self.load_app_config()
         self.validate_render_state()
 
-
-    # --- [BAGIAN BARU: SAVE & LOAD CONFIG] ---
+        # [BARU] Setup koneksi Caption Tab
+        if hasattr(self.setting, 'caption_tab'):
+            self.setting.caption_tab.sig_enable_toggled.connect(self.on_caption_enabled)
+            self.setting.caption_tab.sig_style_changed.connect(self.on_caption_style_changed)
+            self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_transcript)
+            
+    # --- [BAGIAN CONFIG: SAVE & LOAD] ---
     def load_app_config(self):
         """Membaca file JSON dan mengisi folder output terakhir"""
         default_path = os.path.join(os.path.expanduser("~"), "Videos")
@@ -110,10 +117,6 @@ class EditorController:
         self.engine.sig_time_changed.connect(self.update_ui_from_engine)
         self.engine.sig_state_changed.connect(self.update_play_button_icon)
         
-        if hasattr(self.setting, 'caption_tab'):
-             self.setting.caption_tab.btn_generate.clicked.connect(self.on_toggle_caption_preview)
-        
-        
         self.setting.sig_bulk_requested.connect(self.on_bulk_process_start)
         # Update list layer di Bulk Tab setiap kali ada layer dibuat/dihapus
         self.layer_panel.sig_layer_created.connect(self.update_bulk_tab_layers)
@@ -138,7 +141,6 @@ class EditorController:
     def on_visual_item_moved(self, data):
         self.setting.set_values(data)
         if data.get("is_bg", False):
-            # [FIX] Block signals sementara untuk mencegah Infinite Loop (Canvas -> UI -> Canvas)
             self.layer_panel.blockSignals(True)
             try:
                 self.layer_panel.set_bg_values(data)
@@ -163,8 +165,6 @@ class EditorController:
         selected = self.preview.scene.selectedItems()
         if not selected or not isinstance(selected[0], VideoItem): return
         item = selected[0]
-        
-        # [FIX] Cek apakah item ini Background atau Video Biasa
         is_bg = isinstance(item, BackgroundItem)
 
         if "start_time" in data or "end_time" in data:
@@ -175,17 +175,12 @@ class EditorController:
             self.recalculate_global_duration()
             item.apply_global_time(self.engine.current_time)
         
-        # Filter data untuk update settings
         filtered_data = {k: v for k, v in data.items() if k not in ['start_time', 'end_time']}
         item.settings.update(filtered_data)
 
-        # [FIX] LOGIKA PEMISAH ANTARA BG DAN VIDEO BIASA
         if is_bg:
-            # Khusus Background: Jangan pernah panggil item.setPos()!
-            # Panggil method khusus untuk update visual internal (Offset, Scale, Blur, dll)
             item.update_bg_settings(filtered_data)
         else:
-            # Item Biasa: Handle posisi fisik, rotasi, dan teks
             if data.get("type") == "text":
                 if "rotation" in data: item.setRotation(data["rotation"])
                 item.refresh_text_render()
@@ -211,18 +206,24 @@ class EditorController:
                 is_bg = isinstance(item, BackgroundItem)
                 enable_content_buttons = not is_bg
                 
-                item.settings.update({
-                    "x": int(item.pos().x()),
-                    "y": int(item.pos().y()),
+                # Data dasar
+                data_to_update = {
                     "frame_rot": int(item.rotation()),
                     "frame_w": int(item.rect().width()),
                     "frame_h": int(item.rect().height()),
                     "start_time": item.start_time,
                     "end_time": item.end_time
-                })
+                }
+
+                if not is_bg:
+                    data_to_update["x"] = int(item.pos().x())
+                    data_to_update["y"] = int(item.pos().y())
+                
+                item.settings.update(data_to_update)
                 
                 self.setting.set_values(item.settings)
                 self.setting.set_active_tab_by_type(item.settings.get("content_type", "media"))
+                
                 is_locked = item.settings.get("lock", False)
                 self.layer_panel.set_delete_enabled(not is_locked and not is_bg)
                 self.layer_panel.set_reorder_enabled(not is_locked and not is_bg)
@@ -236,6 +237,10 @@ class EditorController:
             pass
 
     def on_create_visual_item(self, frame_code, shape="portrait"):
+        # Cek apakah ini custom creation untuk caption (jangan duplikat logika)
+        if frame_code == "CAPTION_LAYER":
+             return
+
         self.layer_panel.add_layer_item_custom(f"FRAME {frame_code}")
         item = VideoItem(frame_code, None, None, shape=shape)
         self.preview.scene.addItem(item)
@@ -261,10 +266,8 @@ class EditorController:
         item.setSelected(True)
         self.setting.set_values(item.settings)
         self.recalculate_global_duration()
-        
-        return item  # <--- [PENTING] Tambahkan ini agar bisa diakses caption
+        return item 
 
-        # Fungsi Buka Folder
     def on_open_folder_clicked(self):
         folder_path = self.layer_panel.render_tab.txt_folder.text().strip()
         if folder_path and os.path.exists(folder_path):
@@ -272,8 +275,105 @@ class EditorController:
         else:
             QMessageBox.warning(self.view, "Folder Tidak Ditemukan", "Folder tujuan belum dipilih atau tidak ada.")
          
+    # --- [NEW] CAPTION LOGIC STARTS HERE ---
+    
+    # 1. LOGIKA HANDLE TOGGLE CAPTION
+    def on_caption_enabled(self, enabled):
+        scene = self.preview.scene
+        
+        # Cari apakah layer caption sudah ada?
+        caption_item = None
+        for item in scene.items():
+            if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
+                caption_item = item
+                break
+        
+        if enabled:
+            if not caption_item:
+                # Tambahkan ke Layer Panel UI (opsional, visual saja)
+                if hasattr(self.layer_panel, 'add_layer_item_custom'):
+                    self.layer_panel.add_layer_item_custom("CAPTION_LAYER")
+                
+                # Buat Layer Baru jika belum ada
+                caption_item = VideoItem("CAPTION_LAYER", None, None, shape="text")
+                
+                # Default Style Dummy
+                caption_item.settings.update({
+                    "content_type": "caption_preview",
+                    "text_content": "CAPTION PREVIEW\n(Drag Me)",
+                    "font_size": 40,
+                    "text_color": "#ffffff",
+                    "frame_w": 800,
+                    "frame_h": 150,
+                    "x": (1080 - 800) / 2, # Center X
+                    "y": 1920 - 250,       # Bottom Y
+                    "lock": False,
+                    "is_paragraph": True,
+                    "stroke_on": True,
+                    "stroke_width": 2,
+                    "stroke_color": "#000000"
+                })
+                caption_item.setZValue(9999) # Selalu paling atas
+                scene.addItem(caption_item)
+            
+            caption_item.setVisible(True)
+            caption_item.setSelected(True)
+            caption_item.refresh_text_render() # Refresh visual
+            
+        else:
+            # Jika disable, sembunyikan saja (jangan dihapus agar posisi tersimpan)
+            if caption_item:
+                caption_item.setVisible(False)
+                caption_item.setSelected(False)
+
+    # 2. LOGIKA SYNC STYLE (REALTIME)
+    def on_caption_style_changed(self, data):
+        # Cari layer caption
+        caption_item = None
+        for item in self.preview.scene.items():
+            if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
+                caption_item = item
+                break
+        
+        if caption_item:
+            # Update properti dummy layer
+            # Mapping key dari caption_tab ke video_item settings
+            if "font_size" in data: caption_item.settings["font_size"] = data["font_size"]
+            if "text_color" in data: caption_item.settings["text_color"] = data["text_color"]
+            if "font" in data: caption_item.settings["font"] = data["font"]
+            if "stroke_width" in data: caption_item.settings["stroke_width"] = data["stroke_width"]
+            if "stroke_color" in data: caption_item.settings["stroke_color"] = data["stroke_color"]
+            
+            caption_item.refresh_text_render() # Redraw
+
+    # 3. LOGIKA GENERATE TRANSCRIPT (AssemblyAI)
+    def on_generate_transcript(self, options):
+        # Cari video utama untuk diambil audionya
+        target_item = None
+        for item in self.preview.scene.items():
+            if isinstance(item, VideoItem) and item.file_path and not item.settings.get("is_bg"):
+                target_item = item
+                break
+        
+        if not target_item:
+            QMessageBox.warning(self.view, "Error", "Tidak ada video di timeline untuk ditranskrip.")
+            return
+
+        print("🚀 Memulai Transkripsi AssemblyAI...")
+        # (Idealnya gunakan QThread agar UI tidak freeze)
+        try:
+            self.transcript_data = get_transcript_data(target_item.file_path)
+            if self.transcript_data:
+                QMessageBox.information(self.view, "Sukses", f"Berhasil generate {len(self.transcript_data)} kata.")
+            else:
+                QMessageBox.warning(self.view, "Gagal", "Hasil transkrip kosong.")
+        except Exception as e:
+            print(f"Error: {e}")
+            QMessageBox.warning(self.view, "Error", f"Terjadi kesalahan: {e}")
+
+    # --- [MODIFIED] RENDER LOGIC ---
     def on_render_clicked(self):
-        # [MODIFIKASI KECIL] Simpan config juga saat tombol render ditekan (backup)
+        # Simpan config juga saat tombol render ditekan
         self.save_app_config()
         
         self.recalculate_global_duration()
@@ -288,6 +388,7 @@ class EditorController:
         filename = f"MamenPro_{timestamp}.mp4"
         output_path = os.path.join(folder_path, filename)
         
+        # Penentuan Resolusi
         quality_txt = self.layer_panel.render_tab.combo_quality.currentText()
         if "480p" in quality_txt: target_short = 480
         elif "720p" in quality_txt: target_short = 720
@@ -307,11 +408,58 @@ class EditorController:
         
         print(f"[RENDER START] File: {output_path} | Size: {final_w}x{final_h}")
         
+        # [BARU] Persiapan File Subtitle .ass
+        caption_ass_path = None
+        is_caption_on = False
+        if hasattr(self.setting, 'caption_tab'):
+             is_caption_on = self.setting.caption_tab.chk_enable_caption.isChecked()
+        
+        # Pastikan ada data transkrip
+        if is_caption_on and hasattr(self, 'transcript_data') and self.transcript_data:
+            
+            # Cari posisi dummy layer terakhir untuk mendapatkan margin
+            dummy_layer = None
+            for item in self.preview.scene.items():
+                if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
+                    dummy_layer = item
+                    break
+            
+            margin_v = 50 # Default margin
+            if dummy_layer:
+                # Hitung Margin V (Jarak dari bawah layar ke bawah text box)
+                scene_h = self.preview.scene.sceneRect().height()
+                # Koordinat Y item adalah top-left item
+                item_bottom_y = dummy_layer.y() + dummy_layer.rect().height()
+                margin_v = int(scene_h - item_bottom_y)
+                if margin_v < 0: margin_v = 10
+
+                # Generate ASS Content
+                ass_content = make_ass_from_words(
+                    self.transcript_data,
+                    font=dummy_layer.settings.get("font", "Arial"),
+                    size=dummy_layer.settings.get("font_size", 40),
+                    color=self._hex_to_ass_color(dummy_layer.settings.get("text_color", "#ffffff")),
+                    outline=dummy_layer.settings.get("stroke_width", 2),
+                    outline_color=self._hex_to_ass_color(dummy_layer.settings.get("stroke_color", "#000000")),
+                    margin_v=margin_v 
+                )
+                
+                # Simpan ke temp file
+                fd, caption_ass_path = tempfile.mkstemp(suffix=".ass")
+                os.close(fd)
+                with open(caption_ass_path, "w", encoding="utf-8") as f:
+                    f.write(ass_content)
+                self.temp_files.append(caption_ass_path)
+        
+        # --- PERSIAPAN VISUAL ITEMS ---
         items_data = []
         self.temp_files = [] 
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
+            # SKIP CAPTION LAYER agar tidak dirender sebagai gambar statis
+            if getattr(item, 'name', '') == "CAPTION_LAYER": continue
+
             if item.opacity() == 0 or not item.isVisible(): continue
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
@@ -336,6 +484,7 @@ class EditorController:
                 if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']: is_static_image = True
                 else: is_static_image = False 
 
+            # Kalkulasi Koordinat & Skala
             if is_bg:
                 if not item.current_pixmap: continue
                 canvas_w, canvas_h = int(orig_w), int(orig_h)
@@ -374,6 +523,7 @@ class EditorController:
                 'f_b': item.settings.get('f_b', 0),
             })
 
+        # Scaling untuk Output Resolution
         ratio_mult = scale_factor 
         for it in items_data:
             it['x'] = int(it['x'] * ratio_mult)
@@ -385,7 +535,12 @@ class EditorController:
         self.layer_panel.render_tab.btn_stop.setEnabled(True)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
         
-        self.worker = RenderWorker(items_data, output_path, current_duration, final_w, final_h, self.audio_tracks)
+        # Start Worker dengan Subtitle File
+        self.worker = RenderWorker(
+            items_data, output_path, current_duration, 
+            final_w, final_h, self.audio_tracks,
+            subtitle_file=caption_ass_path # Pass file ASS ke worker
+        )
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
 
@@ -486,81 +641,6 @@ class EditorController:
         icon = QStyle.SP_MediaPause if is_playing else QStyle.SP_MediaPlay
         self.preview.btn_play.setIcon(self.view.style().standardIcon(icon))
 
-    # Place this method inside EditorController class in main_controller.py
-
-    def on_toggle_caption_preview(self):
-        print("[DEBUG] Toggle Caption Preview Clicked")
-        
-        # 1. Get Data from UI
-        data = self.setting.caption_tab.get_data()
-        
-        # 2. Check/Create Dummy Layer
-        dummy_layer = None
-        for item in self.preview.scene.items():
-            if hasattr(item, 'name') and item.name == "CAPTION PREVIEW":
-                dummy_layer = item
-                break
-        
-        if not dummy_layer:
-            self.layer_panel.add_layer_item_custom("CAPTION PREVIEW")
-            dummy_layer = VideoItem("CAPTION PREVIEW", None, 10, shape="text")
-            
-            # Set Duration (Global)
-            total_dur = self.engine.duration if self.engine.duration > 0 else 10
-            dummy_layer.set_time_range(0, total_dur)
-            
-            # Set Position
-            scene_rect = self.preview.scene.sceneRect()
-            dummy_layer.setPos(scene_rect.width()/2 - 300, scene_rect.height() - 200)
-            
-            self.preview.scene.addItem(dummy_layer)
-            dummy_layer.setZValue(999)
-            dummy_layer.setSelected(True)
-
-        # 3. Update Style
-        style = {
-            "content_type": "text",
-            "text_content": "PREVIEW CAPTION\n(This text will change during render)",
-            "font_size": data.get("font_size", 40),
-            "text_color": data.get("text_color", "#ffffff"),
-            "stroke_on": True,
-            "stroke_width": data.get("stroke_width", 2),
-            "stroke_color": data.get("stroke_color", "#000000"),
-            "alignment": "center",
-            "is_paragraph": True,
-            "frame_w": 600,
-            "frame_h": 150
-        }
-        
-        dummy_layer.settings.update(style)
-        if hasattr(dummy_layer, 'refresh_text_render'):
-            dummy_layer.refresh_text_render()
-            
-        self.preview.scene.update()
-        
-        # 4. Save style for render time
-        self.caption_style = style
-        
-        # 5. Trigger Transcript Download (Background)
-        # Check if transcript already exists
-        if not self.transcript_data:
-             # Find video item
-            target_item = None
-            for item in self.preview.scene.items():
-                if isinstance(item, VideoItem) and item.file_path and not item.settings.get("is_bg"):
-                    target_item = item
-                    break
-            
-            if target_item:
-                print("⏳ Downloading transcript in background...")
-                # Note: For better UI, use a Thread here. 
-                # For now, we call it directly (might freeze UI for a few seconds)
-                try:
-                    self.transcript_data = get_transcript_data(target_item.file_path)
-                    print(f"✅ Transcript loaded: {len(self.transcript_data)} words")
-                except Exception as e:
-                    print(f"❌ Failed to get transcript: {e}")
-
     def on_bg_properties_changed(self, data):
         if self.bg_item: self.bg_item.update_bg_settings(data)
     def on_bg_toggle_changed(self, is_on):
@@ -577,18 +657,20 @@ class EditorController:
         """Mengambil nama layer teks dari scene untuk dikirim ke Bulk Tab"""
         text_layers = []
         for item in self.preview.scene.items():
-            # Cek jika item adalah VideoItem dan tipe kontennya text
             if hasattr(item, 'settings') and item.settings.get("content_type") == "text":
                 text_layers.append(item.name)
         
         self.setting.bulk_tab.update_layer_list(text_layers)
 
     def on_bulk_process_start(self, data):
-        """Logika Placeholder untuk memproses Bulk"""
         print(f"[BULK] Memulai proses untuk {len(data['raw_data'])} item.")
         print(f"[BULK] Target Layer: {data['target_layer']}")
         
-        # Di sini Anda bisa menambahkan logika loop untuk:
-        # 1. Update text layer
-        # 2. Render frame/video
-        # 3. Simpan output
+    def _hex_to_ass_color(self, hex_color):
+        # Ubah #RRGGBB -> &H00BBGGRR
+        if not hex_color: return "&H00FFFFFF"
+        hex_color = hex_color.lstrip("#")
+        if len(hex_color) == 6:
+            r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
+            return f"&H00{b}{g}{r}"
+        return "&H00FFFFFF"
