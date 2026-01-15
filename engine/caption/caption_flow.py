@@ -10,14 +10,18 @@ from engine.caption.lang_detect import detect_language
 
 
 def extract_audio(video_path, wav_path):
+    # Cek audio dulu sebelum diekstrak
+    with av.open(video_path) as container:
+        if len(container.streams.audio) == 0:
+            return False # Tidak ada audio
+            
     subprocess.run([
         "ffmpeg", "-y",
         "-i", video_path,
-        "-vn",
-        "-ac", "1",
-        "-ar", "16000",
+        "-vn", "-ac", "1", "-ar", "16000",
         wav_path
     ], check=True)
+    return True
 
 
 def apply_caption(
@@ -39,9 +43,14 @@ def apply_caption(
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_audio = os.path.join(tmp, "audio.wav")
-        tmp_ass = os.path.join(tmp, "caption.ass")
-
-        extract_audio(video_path, tmp_audio)
+        
+        # Cek apakah ekstraksi berhasil/audio tersedia
+        if not extract_audio(video_path, tmp_audio):
+            print("⚠️ Video tidak memiliki audio. Melewati pembuatan caption.")
+            # Opsi: Copy video asli ke output_path jika tidak ingin error
+            import shutil
+            shutil.copy(video_path, output_path)
+            return
 
         lang = detect_language(tmp_audio)
         if lang not in ("id", "en"):

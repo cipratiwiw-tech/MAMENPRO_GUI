@@ -224,7 +224,7 @@ class EditorController:
             current_duration = 5.0
             
         if current_duration <= 0.1:
-            current_duration = 5.0
+            current_duration = 5.0 # Force 5 detik jika kosong
             print("[INFO] Durasi 0 terdeteksi, memaksa ke 5.0 detik")
 
         # 2. Ambil Output Path
@@ -236,7 +236,7 @@ class EditorController:
         w_curr = int(scene_rect.width())
         h_curr = int(scene_rect.height())
         
-        # Gunakan resolusi standar agar tidak aneh (misal 541px)
+        # Snap ke resolusi standar jika dekat (untuk mencegah ganjil)
         if abs(w_curr - 1080) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1080, 1080
         elif abs(w_curr - 1080) < 5 and abs(h_curr - 1920) < 5: canvas_w, canvas_h = 1080, 1920
         elif abs(w_curr - 1920) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1920, 1080
@@ -250,20 +250,17 @@ class EditorController:
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
-            # Ambil data waktu
             try:
                 start_t = float(getattr(item, 'start_time', 0.0) or 0.0)
                 end_t = float(getattr(item, 'end_time', 5.0) or 5.0)
             except:
                 start_t, end_t = 0.0, 5.0
             
-            # Skip layer invalid
             if end_t <= start_t: continue
 
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
             
-            # Logic koordinat
             if is_bg:
                 if not self.layer_panel.chk_bg_toggle.isChecked(): continue
                 if not item.current_pixmap: continue
@@ -271,15 +268,12 @@ class EditorController:
                 scale = item.settings.get('scale', 100) / 100.0
                 vw = int(item.current_pixmap.width() * scale)
                 vh = int(item.current_pixmap.height() * scale)
-                
-                # Center background logic
                 px = int((sw/2 + item.settings.get('x', 0)) - (vw/2))
                 py = int((sh/2 + item.settings.get('y', 0)) - (vh/2))
             else:
                 vw, vh = int(item.rect().width()), int(item.rect().height())
                 px, py = int(item.x()), int(item.y())
 
-            # Skip jika dimensi 0 (akan ditolak engine, tapi filter di sini juga)
             if vw <= 0 or vh <= 0: continue
 
             items_data.append({
@@ -306,6 +300,7 @@ class EditorController:
         self.worker.sig_progress.connect(self.on_render_progress)
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
+
 
     def on_stop_render_clicked(self):
         if self.worker and self.worker.isRunning():

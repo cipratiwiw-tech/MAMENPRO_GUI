@@ -19,7 +19,7 @@ except ImportError:
 class VideoEditorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MamenPro Editor (Refactored MVC)")
+        self.setWindowTitle("MamenPro_GUI")
         self.resize(1500, 768)
         
         if STYLESHEET:
