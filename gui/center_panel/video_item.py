@@ -35,12 +35,12 @@ class VideoItem(QGraphicsRectItem):
         self.current_pixmap = None 
         self.clip = None      
             
-        # [BARU] Atribut Waktu (Start & End)
+        #  Atribut Waktu (Start & End)
         self.start_time = 0.0
         self.end_time = 5.0  # Default 5 detik awal
         self.source_duration = 0.0 # Durasi asli file sumber
         
-        # [BARU] Status apakah layer sedang dalam rentang waktu tayang
+        # Status apakah layer sedang dalam rentang waktu tayang
         self.is_in_time_range = True
 
         self.current_handle = self.Handles["NONE"]
@@ -109,7 +109,9 @@ class VideoItem(QGraphicsRectItem):
         if not should_draw_content and not is_selected:
             return 
 
-        painter.save()
+        # --- [FIX 1] SIMPAN STATE PAINTER UTAMA ---
+        # Agar transformasi konten tidak bocor ke UI Helper
+        painter.save() 
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         
         # 2. GAMBAR KONTEN (HANYA JIKA DALAM DURASI)
@@ -126,6 +128,9 @@ class VideoItem(QGraphicsRectItem):
 
             # Gambar Pixmap (Video/Gambar/Teks)
             if self.current_pixmap and not self.current_pixmap.isNull():
+                # --- [FIX 2] ISOLASI TRANSFORMASI KONTEN ---
+                painter.save() # Save khusus untuk konten
+                
                 is_text = self.settings.get("content_type") == "text"
                 painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
 
@@ -138,17 +143,26 @@ class VideoItem(QGraphicsRectItem):
                     img_w = self.current_pixmap.width()
                     img_h = self.current_pixmap.height()
                     
+                    # Pindahkan origin painter ke tengah RECT (Bounding Box)
                     painter.translate(self.rect().center())
+                    
+                    # Terapkan transformasi konten (Rotate & Scale)
                     painter.rotate(content_rot)
                     painter.scale(scale, scale)
+                    
+                    # Geser balik setengah ukuran GAMBAR agar gambar berada di tengah origin
                     painter.translate(-img_w/2, -img_h/2)
+                    
                     painter.drawPixmap(0, 0, self.current_pixmap)
+                
+                painter.restore() # Restore setelah gambar konten, matrix painter kembali bersih
             
             # Matikan clipping sebelum menggambar UI luar
             painter.setClipping(False)
 
         # 3. UI OVERLAY & SELECTION (SELALU GAMBAR JIKA SELECTED)
-        # Ini akan menggambar kotak putus-putus meskipun konten tidak digambar (kosong)
+        # Karena kita sudah restore() di atas, UI ini digambar pada koordinat asli self.rect()
+        # tanpa terpengaruh zoom/rotasi konten.
         
         if self.is_drop_target:
             # Efek Drop Target
@@ -162,17 +176,16 @@ class VideoItem(QGraphicsRectItem):
             # Gambar Border Putus-putus & Handle Resize
             self._paint_ui_helpers(painter)
             
-            # [BARU] Tambahkan indikator visual jika layer sedang "Mati" (Di luar durasi)
+            # Indikator visual jika layer sedang "Mati" (Di luar durasi)
             if not should_draw_content:
-                # Arsir diagonal tipis agar user tau area frame-nya
                 painter.setBrush(QBrush(QColor(255, 255, 255, 20), Qt.FDiagPattern))
                 painter.setPen(Qt.NoPen)
                 painter.drawRect(self.rect())
                 
-                # Label status
                 painter.setPen(QColor("#ff5555")) # Merah terang
                 painter.drawText(self.rect().topLeft() + QPointF(5, -5), f"OFF (Start: {self.start_time}s)")
 
+        # Restore utama
         painter.restore()
     
     # --- [CORE FIX] LOGIKA WAKTU (TANPA SETVISIBLE FALSE) ---
@@ -355,18 +368,44 @@ class VideoItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, event):
         if self.is_resizing:
+            # 1. Hitung selisih drag
             diff = self.mapFromScene(event.scenePos()) - self.mapFromScene(self.resize_start_pos)
             new_w = max(50, self.resize_start_rect.width() + diff.x())
             new_h = max(50, self.resize_start_rect.height() + diff.y())
             
+            # --- [FIX 3] KOMPENSASI DRIFTING ORIGIN ---
+            # Simpan posisi center LAMA (di koordinat scene)
+            old_center_scene = self.mapToScene(self.rect().center())
+
             self.prepareGeometryChange()
             self.setRect(0, 0, new_w, new_h)
+            
+            # Update settings size
             self.settings["frame_w"], self.settings["frame_h"] = int(new_w), int(new_h)
             
+            # Update origin ke center BARU
+            new_center_local = self.rect().center()
+            self.setTransformOriginPoint(new_center_local)
+            
+            # Hitung di mana center BARU sekarang berada di scene
+            new_center_scene = self.mapToScene(new_center_local)
+            
+            # Geser item (pos) sebesar selisih pergeseran center
+            # Ini membuat item tetap diam di tempat secara visual
+            offset = old_center_scene - new_center_scene
+            self.moveBy(offset.x(), offset.y())
+
+            # --- [OPSIONAL] SYNC CONTENT SCALE (Agar gambar ikut membesar) ---
+            # Jika user membesarkan kotak, gambar ikut membesar
+            ratio_w = new_w / self.resize_start_rect.width()
+            # ratio_h = new_h / self.resize_start_rect.height() # Bisa pilih salah satu atau rata-rata
+            
+            # Matikan baris di bawah ini jika ingin mode "Crop" (Kotak membesar, gambar tetap)
+            # self.settings["scale"] = max(1, int(self.settings["scale"] * ratio_w))
+
             if self.settings.get("is_paragraph"): 
                 self.refresh_text_render()
             
-            self.setTransformOriginPoint(self.rect().center())
             self.update()
         else:
             super().mouseMoveEvent(event)
