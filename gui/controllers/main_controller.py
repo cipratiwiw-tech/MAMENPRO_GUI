@@ -1,4 +1,5 @@
 import os
+import tempfile
 from PySide6.QtWidgets import QStyle, QFileDialog, QMessageBox
 from PySide6.QtCore import Qt, QTimer
 
@@ -21,11 +22,9 @@ class EditorController:
         self.worker = None
         
         self._connect_signals()
-        # Validasi awal (Tombol render mati jika kosong)
         self.validate_render_state()
 
     def _connect_signals(self):
-        # 1. Layer & Selection
         self.layer_panel.sig_layer_selected.connect(self.preview.select_frame_by_code)
         self.layer_panel.sig_layer_selected.connect(self.on_canvas_selection_update_ui)
         self.preview.sig_frame_selected.connect(self.layer_panel.select_layer_by_code)
@@ -33,12 +32,10 @@ class EditorController:
         self.layer_panel.sig_layer_reordered.connect(self.on_layer_reordered)
         self.layer_panel.sig_delete_layer.connect(self.on_layer_deleted)
 
-        # 2. Settings & Canvas Actions
         self.setting.on_setting_change.connect(self.on_setting_changed)
         self.preview.scene.selectionChanged.connect(self.on_canvas_selection_update_ui)
         self.preview.sig_item_moved.connect(self.on_canvas_item_moved)
 
-        # 3. Media & Content
         self.layer_panel.btn_add_bg.clicked.connect(self.on_add_bg_clicked)
         self.layer_panel.sig_bg_changed.connect(self.on_bg_properties_changed)
         self.layer_panel.sig_bg_toggle.connect(self.on_bg_toggle_changed)
@@ -46,13 +43,11 @@ class EditorController:
         self.layer_panel.btn_add_text.clicked.connect(self.on_add_text_clicked)
         self.layer_panel.btn_add_paragraph.clicked.connect(self.on_add_paragraph_clicked)
         
-        # 4. Audio
         if hasattr(self.layer_panel, 'tab_audio'):
             self.layer_panel.tab_audio.music_list.btn_import.clicked.connect(self.on_import_audio_clicked)
             self.layer_panel.tab_audio.sfx_list.btn_import.clicked.connect(self.on_import_audio_clicked)
         self.layer_panel.btn_add_audio.clicked.connect(self.on_add_audio_clicked)
 
-        # 5. Templates & Engine
         if hasattr(self.layer_panel, 'tab_templates'):
             self.layer_panel.tab_templates.sig_load_template.connect(self.on_template_loaded)
         if hasattr(self.layer_panel, 'tab_chroma'):
@@ -78,7 +73,6 @@ class EditorController:
             self.preview.view.sig_dropped.connect(self.validate_render_state)
             
     def validate_render_state(self, *args):
-        """Tombol Render AKTIF jika ada BG atau Clip di scene."""
         has_bg = self.layer_panel.chk_bg_toggle.isChecked() and (self.bg_item is not None)
         has_clips = any(isinstance(item, VideoItem) and not isinstance(item, BackgroundItem) 
                        for item in self.preview.scene.items())
@@ -100,7 +94,6 @@ class EditorController:
             self.layer_panel.set_bg_values(data)
                 
     def recalculate_global_duration(self):
-        """Scan semua layer, cari end_time terpanjang, dan set sebagai durasi global."""
         max_end = 5.0
         for item in self.preview.scene.items():
             if isinstance(item, VideoItem):
@@ -143,35 +136,41 @@ class EditorController:
         self.layer_panel.set_delete_enabled(not item.settings.get("lock"))
 
     def on_canvas_selection_update_ui(self):
-        selected = self.preview.scene.selectedItems()
-        enable_content_buttons = False
-        
-        if selected and isinstance(selected[0], VideoItem):
-            item = selected[0]
-            is_bg = isinstance(item, BackgroundItem)
-            enable_content_buttons = not is_bg
+        # [FIX] Tambahkan Try-Except untuk menangani 'Internal C++ Object Deleted'
+        try:
+            if not self.preview or not self.preview.scene: return
             
-            item.settings.update({
-                "x": int(item.pos().x()),
-                "y": int(item.pos().y()),
-                "frame_rot": int(item.rotation()),
-                "frame_w": int(item.rect().width()),
-                "frame_h": int(item.rect().height()),
-                "start_time": item.start_time,
-                "end_time": item.end_time
-            })
+            selected = self.preview.scene.selectedItems()
+            enable_content_buttons = False
             
-            self.setting.set_values(item.settings)
-            self.setting.set_active_tab_by_type(item.settings.get("content_type", "media"))
-            is_locked = item.settings.get("lock", False)
-            self.layer_panel.set_delete_enabled(not is_locked and not is_bg)
-            self.layer_panel.set_reorder_enabled(not is_locked and not is_bg)
-        else:
-            self.layer_panel.set_delete_enabled(False)
-            self.layer_panel.set_reorder_enabled(False)
-            
-        if hasattr(self.layer_panel, 'set_content_button_enabled'):
-            self.layer_panel.set_content_button_enabled(enable_content_buttons)
+            if selected and isinstance(selected[0], VideoItem):
+                item = selected[0]
+                is_bg = isinstance(item, BackgroundItem)
+                enable_content_buttons = not is_bg
+                
+                item.settings.update({
+                    "x": int(item.pos().x()),
+                    "y": int(item.pos().y()),
+                    "frame_rot": int(item.rotation()),
+                    "frame_w": int(item.rect().width()),
+                    "frame_h": int(item.rect().height()),
+                    "start_time": item.start_time,
+                    "end_time": item.end_time
+                })
+                
+                self.setting.set_values(item.settings)
+                self.setting.set_active_tab_by_type(item.settings.get("content_type", "media"))
+                is_locked = item.settings.get("lock", False)
+                self.layer_panel.set_delete_enabled(not is_locked and not is_bg)
+                self.layer_panel.set_reorder_enabled(not is_locked and not is_bg)
+            else:
+                self.layer_panel.set_delete_enabled(False)
+                self.layer_panel.set_reorder_enabled(False)
+                
+            if hasattr(self.layer_panel, 'set_content_button_enabled'):
+                self.layer_panel.set_content_button_enabled(enable_content_buttons)
+        except RuntimeError:
+            pass # Ignore C++ deleted error on exit
 
     def on_create_visual_item(self, frame_code, shape="portrait"):
         self.layer_panel.add_layer_item_custom(f"FRAME {frame_code}")
@@ -200,107 +199,125 @@ class EditorController:
         self.setting.set_values(item.settings)
         self.recalculate_global_duration()
 
-
-
-    @staticmethod
-    def validate_before_render(items_data, total_duration):
-        # Validasi minimalis
-        if total_duration <= 0.1:
-            return False, "Durasi proyek 0 detik. Tambahkan background atau layer."
-        
-        # Izinkan render walau hanya 1 item (misal background doang)
-        if len(items_data) == 0:
-            return False, "Timeline kosong. Tambahkan background minimal."
-            
-        return True, None
-
+    # --- [RENDER LOGIC YANG DIPERBAIKI TOTAL] ---
     def on_render_clicked(self):
-        # 1. Update Durasi Global & Validasi
         self.recalculate_global_duration()
+        current_duration = max(0.1, float(self.engine.duration))
         
-        try:
-            current_duration = float(self.engine.duration)
-        except:
-            current_duration = 5.0
-            
-        if current_duration <= 0.1:
-            current_duration = 5.0 # Force 5 detik jika kosong
-            print("[INFO] Durasi 0 terdeteksi, memaksa ke 5.0 detik")
-
-        # 2. Ambil Output Path
-        output_path, _ = QFileDialog.getSaveFileName(self.view, "Simpan Video", "project_output.mp4", "Video Files (*.mp4)")
+        output_path, _ = QFileDialog.getSaveFileName(self.view, "Simpan Video", "render_output.mp4", "Video Files (*.mp4)")
         if not output_path: return
 
-        # 3. Tentukan Resolusi (Standardize)
+        # Resolusi Canvas
         scene_rect = self.preview.scene.sceneRect()
-        w_curr = int(scene_rect.width())
-        h_curr = int(scene_rect.height())
+        canvas_w, canvas_h = int(scene_rect.width()), int(scene_rect.height())
         
-        # Snap ke resolusi standar jika dekat (untuk mencegah ganjil)
-        if abs(w_curr - 1080) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1080, 1080
-        elif abs(w_curr - 1080) < 5 and abs(h_curr - 1920) < 5: canvas_w, canvas_h = 1080, 1920
-        elif abs(w_curr - 1920) < 5 and abs(h_curr - 1080) < 5: canvas_w, canvas_h = 1920, 1080
-        else:
-            canvas_w, canvas_h = w_curr, h_curr
-        
-        # 4. Kumpulkan Data Layer
         items_data = []
-        sw, sh = float(canvas_w), float(canvas_h)
-        
+        self.temp_files = [] 
+
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
-            try:
-                start_t = float(getattr(item, 'start_time', 0.0) or 0.0)
-                end_t = float(getattr(item, 'end_time', 5.0) or 5.0)
-            except:
-                start_t, end_t = 0.0, 5.0
+            # Skip jika item hidden
+            if item.opacity() == 0 or not item.isVisible(): continue
             
-            if end_t <= start_t: continue
-
+            # --- 1. TENTUKAN TIPE KONTEN & PATH ---
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
             
-            if is_bg:
-                if not self.layer_panel.chk_bg_toggle.isChecked(): continue
-                if not item.current_pixmap: continue
-                
-                scale = item.settings.get('scale', 100) / 100.0
-                vw = int(item.current_pixmap.width() * scale)
-                vh = int(item.current_pixmap.height() * scale)
-                px = int((sw/2 + item.settings.get('x', 0)) - (vw/2))
-                py = int((sh/2 + item.settings.get('y', 0)) - (vh/2))
+            render_path = None
+            is_static_image = False # Default False, akan dicek nanti
+
+            if is_text:
+                # Render teks ke gambar temp
+                if not item.current_pixmap: item.refresh_text_render()
+                if item.current_pixmap:
+                    fd, temp_path = tempfile.mkstemp(suffix=".png")
+                    os.close(fd)
+                    item.current_pixmap.save(temp_path, "PNG")
+                    self.temp_files.append(temp_path)
+                    render_path = temp_path
+                    is_static_image = True # Teks selalu jadi gambar
             else:
-                vw, vh = int(item.rect().width()), int(item.rect().height())
-                px, py = int(item.x()), int(item.y())
+                # Media Biasa / BG
+                render_path = item.file_path
+            
+            # [FIX CRITICAL] Skip jika path kosong (mencegah error os.path)
+            if not render_path:
+                print(f"[SKIP RENDER] Item {item} tidak memiliki file path.")
+                continue
 
-            if vw <= 0 or vh <= 0: continue
+            # [FIX CRITICAL] Deteksi File Extension dengan Benar
+            # Jangan anggap BG selalu Image. BG bisa video.
+            if not is_text:
+                ext = os.path.splitext(render_path)[1].lower()
+                if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
+                    is_static_image = True
+                else:
+                    is_static_image = False # Video File
 
+            # --- 2. HITUNG POSISI & UKURAN ---
+            if is_bg:
+                # Logika Background Cover
+                if not item.current_pixmap: continue
+                pix_w = item.current_pixmap.width()
+                pix_h = item.current_pixmap.height()
+                
+                scale_w = canvas_w / pix_w
+                scale_h = canvas_h / pix_h
+                base_scale = max(scale_w, scale_h)
+                
+                user_scale = item.settings.get('scale', 100) / 100.0
+                final_scale = base_scale * user_scale
+                
+                vw = int(pix_w * final_scale)
+                vh = int(pix_h * final_scale)
+                
+                off_x = item.settings.get('x', 0)
+                off_y = item.settings.get('y', 0)
+                
+                px = int((canvas_w / 2) - (vw / 2) + off_x)
+                py = int((canvas_h / 2) - (vh / 2) + off_y)
+
+            else:
+                # Logika Item Biasa
+                vw = int(item.rect().width())
+                vh = int(item.rect().height())
+                px = int(item.x())
+                py = int(item.y())
+
+            # Masukkan ke list render
             items_data.append({
-                'path': item.file_path, 
-                'is_bg': is_bg, 
-                'is_text': is_text,
-                'text_pixmap': item.current_pixmap if is_text else None,
+                'path': render_path, 
+                'is_image': is_static_image, # [PENTING] Kirim flag tipe file yang benar
                 'x': px, 'y': py, 
                 'visual_w': vw, 'visual_h': vh,
-                'rot': int(item.rotation()),
+                'rot': int(item.rotation()), 
                 'opacity': item.settings.get('opacity', 100),
                 'z_value': item.zValue(),
-                'blur': item.settings.get('blur', 0),
-                'vig': item.settings.get('vig', 0),
-                'start_time': start_t,
-                'end_time': end_t
+                'start_time': item.start_time,
+                'end_time': item.end_time
             })
 
-        # 5. Eksekusi Worker
+        # Jalankan Render
         self.layer_panel.render_tab.btn_render.setEnabled(False)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
         
         self.worker = RenderWorker(items_data, output_path, current_duration, canvas_w, canvas_h, self.audio_tracks)
-        self.worker.sig_progress.connect(self.on_render_progress)
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
 
+    def on_render_finished(self, success, msg):
+        self.layer_panel.render_tab.btn_render.setEnabled(True)
+        self.layer_panel.render_tab.btn_render.setText("🎬 MULAI RENDER")
+        
+        # Cleanup temp
+        for f in self.temp_files:
+            try: os.remove(f)
+            except: pass
+        self.temp_files.clear()
+        
+        if success: QMessageBox.information(self.view, "Sukses", msg)
+        else: QMessageBox.warning(self.view, "Render Gagal", msg)
 
     def on_stop_render_clicked(self):
         if self.worker and self.worker.isRunning():
@@ -309,13 +326,6 @@ class EditorController:
 
     def on_render_progress(self, msg): print(f"[RENDER] {msg}")
     
-    def on_render_finished(self, success, msg):
-        self.layer_panel.render_tab.btn_render.setEnabled(True)
-        self.layer_panel.render_tab.btn_render.setText("🎬 MULAI RENDER")
-        self.layer_panel.render_tab.btn_stop.setEnabled(False)
-        if success: QMessageBox.information(self.view, "Sukses", msg)
-        else: QMessageBox.warning(self.view, "Info", msg)
-
     def on_add_bg_clicked(self):
         if not self.layer_panel.chk_bg_toggle.isChecked(): return
         data = MediaManager.open_media_dialog(self.view, "Pilih Background")

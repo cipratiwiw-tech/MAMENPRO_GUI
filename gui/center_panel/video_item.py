@@ -401,36 +401,30 @@ class BackgroundItem(VideoItem):
         self.blur_effect.setEnabled(False)
         self.set_time_range(0, None)
 
-    def set_content(self, path):
-        super().set_content(path)
-        # Reset posisi ke tengah
-        self.setPos(0, 0) 
-        self.settings.update({"x": 0, "y": 0, "scale": 100, "fit": "cover"})
-        self.update()
-
     def set_scene_size(self, w, h):
         self.scene_w = w
         self.scene_h = h
         self.update()
 
+    # Di dalam class BackgroundItem
+    def set_content(self, path):
+        super().set_content(path)
+        self.setPos(0, 0) 
+        # Simpan state awal x,y = 0 di settings
+        self.settings.update({"x": 0, "y": 0, "scale": 100, "fit": "cover"})
+        self.update()
+
     def update_bg_settings(self, data):
         self.settings.update(data)
+        # Pastikan tidak ada konflik antara setPos (Qt) dan settings['x']
+        # Background Item HARUS tetap di (0,0) secara fisik container, 
+        # Pergeseran visual hanya dilakukan via Translation painter atau update settings x/y
+        # Namun, agar drag & drop preview jalan, kita biarkan setPos berjalan,
+        # tapi controller HARUS membacanya sebagai OFFSET, bukan posisi absolut.
         
-        # 1. Sync Posisi: Jika user mengetik X/Y di panel, update posisi fisik item
+        # (Kode lama sudah oke, yang penting logika di Controller "SOLUSI BACKGROUND" di atas diterapkan)
         if "x" in data or "y" in data:
-            new_x = data.get("x", self.pos().x())
-            new_y = data.get("y", self.pos().y())
-            self.setPos(new_x, new_y)
-            
-        if "blur" in data:
-            val = data["blur"]
-            self.blur_effect.setEnabled(val > 0)
-            if val > 0: self.blur_effect.setBlurRadius(val)
-            
-        if "lock" in data:
-            is_locked = data["lock"]
-            self.setFlag(QGraphicsItem.ItemIsMovable, not is_locked)
-
+            self.setPos(data.get("x", 0), data.get("y", 0))
         self.update()
 
     def paint(self, painter, option, widget):
