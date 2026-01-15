@@ -1,13 +1,19 @@
 import os
 import tempfile
+import datetime
+import json
 from PySide6.QtWidgets import QStyle, QFileDialog, QMessageBox
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from manager.media_manager import MediaManager
 from gui.center_panel.video_item import VideoItem, BackgroundItem
 from engine.caption.caption_flow import apply_caption
 from gui.utils.bg_service import BackgroundService
 from engine.render_engine import RenderWorker
+
+# [BARU] Nama file config
+CONFIG_FILE = "user_config.json"
 
 class EditorController:
     def __init__(self, main_window):
@@ -20,10 +26,51 @@ class EditorController:
         self.bg_item = None
         self.audio_tracks = []
         self.worker = None
+        self.temp_files = [] # Init temp files list
         
         self._connect_signals()
+        # Load Config saat aplikasi mulai
+        self.load_app_config()
         self.validate_render_state()
 
+    # --- [BAGIAN BARU: SAVE & LOAD CONFIG] ---
+    def load_app_config(self):
+        """Membaca file JSON dan mengisi folder output terakhir"""
+        default_path = os.path.join(os.path.expanduser("~"), "Videos")
+        if not os.path.exists(default_path):
+             default_path = os.path.expanduser("~")
+             
+        final_path = default_path
+
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r") as f:
+                    data = json.load(f)
+                    saved_path = data.get("last_output_folder", "")
+                    if saved_path and os.path.exists(saved_path):
+                        final_path = saved_path
+                        print(f"[CONFIG] Loaded last path: {final_path}")
+        except Exception as e:
+            print(f"[CONFIG] Error loading config: {e}")
+
+        # Set ke UI
+        self.layer_panel.render_tab.txt_folder.setText(final_path)
+
+    def save_app_config(self):
+        """Menyimpan folder output saat ini ke JSON"""
+        current_folder = self.layer_panel.render_tab.txt_folder.text().strip()
+        
+        data = {
+            "last_output_folder": current_folder
+        }
+        
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(data, f, indent=4)
+            print("[CONFIG] Settings saved successfully.")
+        except Exception as e:
+            print(f"[CONFIG] Error saving config: {e}")
+            
     def _connect_signals(self):
         self.layer_panel.sig_layer_selected.connect(self.preview.select_frame_by_code)
         self.layer_panel.sig_layer_selected.connect(self.on_canvas_selection_update_ui)
@@ -59,8 +106,12 @@ class EditorController:
         self.engine.sig_state_changed.connect(self.update_play_button_icon)
         
         self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
+        
+        # --- CONNECT RENDER TAB BUTTONS ---
         self.layer_panel.render_tab.btn_render.clicked.connect(self.on_render_clicked)
         self.layer_panel.render_tab.btn_stop.clicked.connect(self.on_stop_render_clicked)
+        # Connect tombol Buka Folder
+        self.layer_panel.render_tab.btn_open_folder.clicked.connect(self.on_open_folder_clicked)
         
         self.preview.sig_item_moved.connect(self.on_visual_item_moved)
         self.layer_panel.sig_layer_created.connect(self.validate_render_state)
@@ -71,23 +122,7 @@ class EditorController:
         
         if hasattr(self.preview.view, 'sig_dropped'):
             self.preview.view.sig_dropped.connect(self.validate_render_state)
-            
-    def validate_render_state(self, *args):
-        has_bg = self.layer_panel.chk_bg_toggle.isChecked() and (self.bg_item is not None)
-        has_clips = any(isinstance(item, VideoItem) and not isinstance(item, BackgroundItem) 
-                       for item in self.preview.scene.items())
-        
-        can_render = has_bg or has_clips
-        btn = self.layer_panel.render_tab.btn_render
-        btn.setEnabled(can_render)
-        
-        if can_render:
-            btn.setStyleSheet("background-color: #2a9d8f; color: white; font-size: 14px; font-weight: bold;")
-            btn.setToolTip("Siap Render")
-        else:
-            btn.setStyleSheet("background-color: #555555; color: #aaaaaa; font-size: 14px; font-weight: bold;")
-            btn.setToolTip("Scene kosong! Tambahkan BG atau Clip.")
-            
+                       
     def on_visual_item_moved(self, data):
         self.setting.set_values(data)
         if data.get("is_bg", False):
@@ -198,27 +233,57 @@ class EditorController:
         self.setting.set_values(item.settings)
         self.recalculate_global_duration()
 
+        # Fungsi Buka Folder
+    def on_open_folder_clicked(self):
+        folder_path = self.layer_panel.render_tab.txt_folder.text().strip()
+        if folder_path and os.path.exists(folder_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
+        else:
+            QMessageBox.warning(self.view, "Folder Tidak Ditemukan", "Folder tujuan belum dipilih atau tidak ada.")
+         
     def on_render_clicked(self):
+        # [MODIFIKASI KECIL] Simpan config juga saat tombol render ditekan (backup)
+        self.save_app_config()
+        
         self.recalculate_global_duration()
         current_duration = max(0.1, float(self.engine.duration))
         
-        output_path, _ = QFileDialog.getSaveFileName(self.view, "Simpan Video", "render_output.mp4", "Video Files (*.mp4)")
-        if not output_path: return
-
+        folder_path = self.layer_panel.render_tab.txt_folder.text().strip()
+        if not folder_path or not os.path.exists(folder_path):
+            QMessageBox.warning(self.view, "Folder Tidak Valid", "Silakan pilih folder tujuan yang valid!")
+            return
+            
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"MamenPro_{timestamp}.mp4"
+        output_path = os.path.join(folder_path, filename)
+        
+        quality_txt = self.layer_panel.render_tab.combo_quality.currentText()
+        if "480p" in quality_txt: target_short = 480
+        elif "720p" in quality_txt: target_short = 720
+        elif "4K" in quality_txt: target_short = 2160
+        else: target_short = 1080
+        
         scene_rect = self.preview.scene.sceneRect()
-        canvas_w, canvas_h = int(scene_rect.width()), int(scene_rect.height())
+        orig_w, orig_h = scene_rect.width(), scene_rect.height()
+        is_landscape = orig_w >= orig_h
+        current_short = orig_h if is_landscape else orig_w
+        scale_factor = target_short / current_short
+        
+        final_w = int(orig_w * scale_factor)
+        final_h = int(orig_h * scale_factor)
+        if final_w % 2 != 0: final_w += 1
+        if final_h % 2 != 0: final_h += 1
+        
+        print(f"[RENDER START] File: {output_path} | Size: {final_w}x{final_h}")
         
         items_data = []
         self.temp_files = [] 
-
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
             if item.opacity() == 0 or not item.isVisible(): continue
-            
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
-            
             render_path = None
             is_static_image = False 
 
@@ -234,37 +299,26 @@ class EditorController:
             else:
                 render_path = item.file_path
             
-            # [FIX] Cek Path Valid
-            if not render_path:
-                print(f"[SKIP RENDER] Item {item} path kosong.")
-                continue
-
-            # [FIX] Deteksi Tipe File
+            if not render_path: continue
             if not is_text:
                 ext = os.path.splitext(render_path)[1].lower()
-                if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
-                    is_static_image = True
-                else:
-                    is_static_image = False 
+                if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']: is_static_image = True
+                else: is_static_image = False 
 
             if is_bg:
                 if not item.current_pixmap: continue
+                canvas_w, canvas_h = int(orig_w), int(orig_h)
                 pix_w = item.current_pixmap.width()
                 pix_h = item.current_pixmap.height()
-                
                 scale_w = canvas_w / pix_w
                 scale_h = canvas_h / pix_h
                 base_scale = max(scale_w, scale_h)
-                
                 user_scale = item.settings.get('scale', 100) / 100.0
                 final_scale = base_scale * user_scale
-                
                 vw = int(pix_w * final_scale)
                 vh = int(pix_h * final_scale)
-                
                 off_x = item.settings.get('x', 0)
                 off_y = item.settings.get('y', 0)
-                
                 px = int((canvas_w / 2) - (vw / 2) + off_x)
                 py = int((canvas_h / 2) - (vh / 2) + off_y)
             else:
@@ -274,41 +328,64 @@ class EditorController:
                 py = int(item.y())
 
             items_data.append({
-                'path': render_path, 
-                'is_image': is_static_image,
-                'x': px, 'y': py, 
-                'visual_w': vw, 'visual_h': vh,
+                'path': render_path, 'is_image': is_static_image,
+                'x': px, 'y': py, 'visual_w': vw, 'visual_h': vh,
                 'rot': int(item.rotation()), 
                 'opacity': item.settings.get('opacity', 100),
                 'z_value': item.zValue(),
-                'start_time': item.start_time,
-                'end_time': item.end_time
+                'start_time': item.start_time, 'end_time': item.end_time
             })
 
+        ratio_mult = scale_factor 
+        for it in items_data:
+            it['x'] = int(it['x'] * ratio_mult)
+            it['y'] = int(it['y'] * ratio_mult)
+            it['visual_w'] = int(it['visual_w'] * ratio_mult)
+            it['visual_h'] = int(it['visual_h'] * ratio_mult)
+
         self.layer_panel.render_tab.btn_render.setEnabled(False)
+        self.layer_panel.render_tab.btn_stop.setEnabled(True)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
         
-        self.worker = RenderWorker(items_data, output_path, current_duration, canvas_w, canvas_h, self.audio_tracks)
+        self.worker = RenderWorker(items_data, output_path, current_duration, final_w, final_h, self.audio_tracks)
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
 
     def on_render_finished(self, success, msg):
         self.layer_panel.render_tab.btn_render.setEnabled(True)
+        self.layer_panel.render_tab.btn_stop.setEnabled(False)
         self.layer_panel.render_tab.btn_render.setText("🎬 MULAI RENDER")
-        
         for f in self.temp_files:
             try: os.remove(f)
             except: pass
         self.temp_files.clear()
-        
-        if success: QMessageBox.information(self.view, "Sukses", msg)
-        else: QMessageBox.warning(self.view, "Render Gagal", msg)
+        if success: 
+            reply = QMessageBox.question(self.view, "Sukses", f"{msg}\n\nBuka folder output?", QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes: self.on_open_folder_clicked()
+        else: QMessageBox.warning(self.view, "Render Gagal/Stop", msg)
 
     def on_stop_render_clicked(self):
         if self.worker and self.worker.isRunning():
-            self.worker.stop()
             self.layer_panel.render_tab.btn_stop.setText("Stopping...")
-
+            self.layer_panel.render_tab.btn_stop.setEnabled(False)
+            self.worker.stop()
+            
+    def validate_render_state(self, *args):
+        has_bg = self.layer_panel.chk_bg_toggle.isChecked() and (self.bg_item is not None)
+        has_clips = any(isinstance(item, VideoItem) and not isinstance(item, BackgroundItem) 
+                       for item in self.preview.scene.items())
+        
+        can_render = has_bg or has_clips
+        btn = self.layer_panel.render_tab.btn_render
+        btn.setEnabled(can_render)
+        
+        if can_render:
+            btn.setStyleSheet("background-color: #2a9d8f; color: white; font-size: 14px; font-weight: bold;")
+            btn.setToolTip("Siap Render")
+        else:
+            btn.setStyleSheet("background-color: #555555; color: #aaaaaa; font-size: 14px; font-weight: bold;")
+            btn.setToolTip("Scene kosong! Tambahkan BG atau Clip.")
+   
     def on_render_progress(self, msg): print(f"[RENDER] {msg}")
     
     def on_add_bg_clicked(self):

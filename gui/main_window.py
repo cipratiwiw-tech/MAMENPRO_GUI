@@ -30,7 +30,6 @@ class VideoEditorApp(QMainWindow):
         self._init_ui()
         
         # 2. Init Controller (Menyerahkan logika ke Controller)
-        # Kita passing 'self' agar controller bisa mengakses UI elements
         self.controller = EditorController(self)
         
     def _init_ui(self):
@@ -47,6 +46,16 @@ class VideoEditorApp(QMainWindow):
         
         self.splitter.setSizes([200, 800, 300])
         self.preview.scene.setSceneRect(0, 0, 1080, 1920) 
+
+    # --- [BARU] EVENT PENUTUPAN APLIKASI ---
+    def closeEvent(self, event):
+        """Dipanggil otomatis saat tombol X diklik"""
+        print("[APP] Closing... Saving config.")
+        if self.controller:
+            self.controller.save_app_config()
+        
+        # Lanjutkan proses penutupan
+        event.accept()
 
 # Entry point tetap sama...
 if __name__ == "__main__":

@@ -16,9 +16,17 @@ class RenderWorker(QThread):
         self.canvas_h = height
         self.audio_tracks = audio_tracks if audio_tracks is not None else []
         self.is_stopped = False
+        self.process = None # [BARU] Simpan instance subprocess
 
     def stop(self):
+        """Dipanggil dari Controller saat tombol Stop diklik"""
         self.is_stopped = True
+        if self.process:
+            print("[RENDER ENGINE] Killing FFmpeg process...")
+            try:
+                self.process.kill() # Matikan paksa FFmpeg
+            except Exception as e:
+                print(f"Error killing process: {e}")
 
     def run(self):
         self.sig_progress.emit("🚀 Memulai Render Engine...")
@@ -36,6 +44,7 @@ class RenderWorker(QThread):
         input_idx = 0
 
         for item in sorted_items:
+            # Cek stop sebelum menambah input (meski yang krusial adalah kill process)
             if self.is_stopped: break
             
             file_path = item['path']
@@ -48,12 +57,10 @@ class RenderWorker(QThread):
                 print(f"[SKIP] File tidak ditemukan: {file_path}")
                 continue
 
-            # [FIX CRITICAL] Loop hanya untuk GAMBAR STATIC
+            # Loop image = Infinite Stream (Penyebab render tidak berhenti jika tanpa -t)
             if is_image:
                 inputs.extend(['-loop', '1', '-i', file_path])
             else:
-                # Video File: Jangan pakai -loop 1, itu error buat mp4
-                # Opsional: Jika ingin video looping: inputs.extend(['-stream_loop', '-1', '-i', file_path])
                 inputs.extend(['-i', file_path])
                 
             current_in_label = f"[{input_idx}:v]"
@@ -78,11 +85,11 @@ class RenderWorker(QThread):
             node_opacity = f"[op{input_idx}]"
             node_overlay = f"[lay{input_idx}]"
 
-            # 1. SETPTS (Sinkronisasi Waktu)
+            # 1. SETPTS
             filter_parts.append(f"{current_in_label}setpts=PTS-STARTPTS+({start_t}/TB){node_pts}")
             last_processed = node_pts
 
-            # 2. SCALE & CROP (Agar tidak gepeng)
+            # 2. SCALE & CROP
             filter_parts.append(
                 f"{last_processed}scale=w={vis_w}:h={vis_h}:force_original_aspect_ratio=increase,"
                 f"crop={vis_w}:{vis_h}{node_scaled}"
@@ -119,8 +126,10 @@ class RenderWorker(QThread):
                     audio_cmds.append(f"[{input_idx}:a]") 
                     input_idx += 1
         
-        # --- COMMAND ---
-        if self.is_stopped: return
+        # --- COMMAND EXECUTION ---
+        if self.is_stopped: 
+            self.sig_finished.emit(False, "Render dihentikan sebelum mulai.")
+            return
 
         full_filter = ";".join(filter_parts)
         
@@ -135,6 +144,11 @@ class RenderWorker(QThread):
         
         cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p'])
         cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
+        
+        # [SOLUSI UTAMA] Paksa berhenti sesuai durasi timeline!
+        # Tanpa ini, gambar yang di-loop akan membuat render berjalan selamanya.
+        cmd.extend(['-t', str(self.duration)])
+        
         cmd.append(self.output_path)
         
         self._run_process(cmd)
@@ -146,7 +160,8 @@ class RenderWorker(QThread):
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-            process = subprocess.Popen(
+            # [MODIFIKASI] Simpan ke self.process
+            self.process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE,
@@ -155,13 +170,18 @@ class RenderWorker(QThread):
                 encoding='utf-8', errors='replace'
             )
             
-            stdout, stderr = process.communicate()
+            # Communicate akan block thread ini sampai selesai atau di-kill
+            stdout, stderr = self.process.communicate()
             
-            if process.returncode == 0:
+            # Cek status berhenti
+            if self.is_stopped:
+                self.sig_finished.emit(False, "Render Stopped by User.")
+            elif self.process.returncode == 0:
                 self.sig_finished.emit(True, f"Render Selesai!\nSaved to: {self.output_path}")
             else:
                 self.sig_finished.emit(False, f"Error FFmpeg:\n{stderr[-600:]}")
                 print("FFMPEG LOG:", stderr)
 
         except Exception as e:
-            self.sig_finished.emit(False, str(e))
+            if not self.is_stopped: # Jangan lapor error jika memang kita yang stop
+                self.sig_finished.emit(False, str(e))
