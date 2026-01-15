@@ -260,15 +260,35 @@ class LayerPanel(QWidget):
         self.spn_vignette.setEnabled(can_edit_effect)
         self.spn_blur.setEnabled(can_edit_effect)
             
+    # Di dalam class LayerPanel...
+
     def set_bg_values(self, data):
-        self.blockSignals(True)
-        self.spin_bg_x.setValue(data.get("x", 0))
-        self.spin_bg_y.setValue(data.get("y", 0))
-        self.spin_bg_scale.setValue(data.get("scale", 100))
-        self.spn_blur.setValue(data.get("blur", 0))
-        self.spn_vignette.setValue(data.get("vig", 0))
-        self.blockSignals(False)
-  
+        """
+        Update tampilan SpinBox UI tanpa memicu sinyal perubahan (Loop protection).
+        Dipanggil saat Background digeser di Canvas.
+        """
+        # Blokir sinyal agar tidak mental balik ke canvas
+        self.spin_bg_x.blockSignals(True)
+        self.spin_bg_y.blockSignals(True)
+        self.spin_bg_scale.blockSignals(True)
+        self.spn_blur.blockSignals(True)
+        self.spn_vignette.blockSignals(True)
+        
+        # Update nilai UI
+        if "x" in data: self.spin_bg_x.setValue(int(data["x"]))
+        if "y" in data: self.spin_bg_y.setValue(int(data["y"]))
+        if "scale" in data: self.spin_bg_scale.setValue(int(data["scale"]))
+        if "blur" in data: self.spn_blur.setValue(int(data["blur"]))
+        if "vig" in data: self.spn_vignette.setValue(int(data["vig"]))
+        if "lock" in data: self.chk_bg_lock.setChecked(data["lock"])
+
+        # Buka kembali sinyal
+        self.spin_bg_x.blockSignals(False)
+        self.spin_bg_y.blockSignals(False)
+        self.spin_bg_scale.blockSignals(False)
+        self.spn_blur.blockSignals(False)
+        self.spn_vignette.blockSignals(False)
+        
     def set_content_button_enabled(self, enabled):
         self.btn_add_content.setEnabled(enabled)
         self.btn_add_text.setEnabled(enabled)

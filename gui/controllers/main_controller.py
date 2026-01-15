@@ -64,7 +64,21 @@ class EditorController:
         self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
         self.layer_panel.render_tab.btn_render.clicked.connect(self.on_render_clicked)
         self.layer_panel.render_tab.btn_stop.clicked.connect(self.on_stop_render_clicked)
+        # [FIX] Tangkap sinyal saat item digeser di canvas
+        self.preview.sig_item_moved.connect(self.on_visual_item_moved)
         
+    def on_visual_item_moved(self, data):
+        """
+        Saat item digeser di canvas, update angka di panel properti.
+        Jika itu background, update juga Panel Kiri (LayerPanel).
+        """
+        # 1. Update Property Panel (Kanan)
+        self.setting.set_values(data)
+        
+        # 2. [FIX] Cek apakah ini Background? Jika ya, update Panel Kiri
+        if data.get("is_bg", False):
+            self.layer_panel.set_bg_values(data)
+                
     # --- LOGIKA OTOMATISASI DURASI GLOBAL ---
     def recalculate_global_duration(self):
         """

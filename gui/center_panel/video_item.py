@@ -371,46 +371,42 @@ class VideoItem(QGraphicsRectItem):
             
         super().mouseReleaseEvent(event)
 
-# --- CLASS BACKGROUND (AUTO-RESET & FIT CENTER) ---
+# --- CLASS BACKGROUND (VIGNETTE FIXED ON CANVAS) ---
 class BackgroundItem(VideoItem):
     """
     Spesialisasi VideoItem untuk latar belakang.
     Fitur:
-    - Auto Center & Reset saat load file baru
-    - Fit Mode: 'contain' (Muat dalam layar tanpa gepeng)
+    - Auto Center
+    - Fit Mode: 'cover' (Zoom Center)
+    - Vignette STATIC (Tidak ikut geser saat BG digeser)
+    - Sinkronisasi Drag & Typing Coordinate
     """
     def __init__(self, path, scene_rect):
         super().__init__("BG", path, None)
-        self.setZValue(-500) # Selalu paling bawah
+        self.setZValue(-500) 
         
-        # Simpan ukuran scene
         self.scene_w = scene_rect.width()
         self.scene_h = scene_rect.height()
         
         self.blur_effect = QGraphicsBlurEffect()
         self.setGraphicsEffect(self.blur_effect)
         
-        # Default Settings awal
+        # Default Settings
         self.settings.update({
             "blur": 0, "vig": 0, "is_bg": True, 
-            "scale": 100, "x": 0, "y": 0, "fit": "cover" 
+            "scale": 100, "x": 0, "y": 0, 
+            "fit": "cover" 
         })
         
         self.blur_effect.setEnabled(False)
         self.set_time_range(0, None)
 
-    # --- PERBAIKAN UTAMA: Override set_content ---
-    # Agar setiap ganti file, posisi dipaksa reset ke tengah
     def set_content(self, path):
-        super().set_content(path) # Load file via parent
-        
-        # FORCE RESET SETTINGS
-        self.settings["x"] = 0
-        self.settings["y"] = 0
-        self.settings["scale"] = 100
-        self.settings["fit"] = "cover" # Pastikan mode cover
-        
-        self.update() # Refresh tampilan
+        super().set_content(path)
+        # Reset posisi ke tengah
+        self.setPos(0, 0) 
+        self.settings.update({"x": 0, "y": 0, "scale": 100, "fit": "cover"})
+        self.update()
 
     def set_scene_size(self, w, h):
         self.scene_w = w
@@ -420,20 +416,20 @@ class BackgroundItem(VideoItem):
     def update_bg_settings(self, data):
         self.settings.update(data)
         
-        # 1. Update Efek Blur
+        # 1. Sync Posisi: Jika user mengetik X/Y di panel, update posisi fisik item
+        if "x" in data or "y" in data:
+            new_x = data.get("x", self.pos().x())
+            new_y = data.get("y", self.pos().y())
+            self.setPos(new_x, new_y)
+            
         if "blur" in data:
             val = data["blur"]
             self.blur_effect.setEnabled(val > 0)
             if val > 0: self.blur_effect.setBlurRadius(val)
             
-        # 2. ✅ PENTING: Update Logic Lock Movable
         if "lock" in data:
             is_locked = data["lock"]
-            # Matikan kemampuan geser (Movable) jika Locked
             self.setFlag(QGraphicsItem.ItemIsMovable, not is_locked)
-            # Matikan kemampuan seleksi (Selectable) jika mau (opsional), 
-            # tapi biasanya background tetap butuh seleksi untuk lihat properti.
-            # self.setFlag(QGraphicsItem.ItemIsSelectable, not is_locked) 
 
         self.update()
 
@@ -448,33 +444,28 @@ class BackgroundItem(VideoItem):
         cw, ch = self.scene_w, self.scene_h
         pw, ph = self.current_pixmap.width(), self.current_pixmap.height()
         
-        # --- 1. LOGIKA SCALE (COVER MODE) ---
+        # Ambil posisi fisik item saat ini (karena drag / setPos)
+        curr_x = self.pos().x()
+        curr_y = self.pos().y()
+
+        # --- 1. GAMBAR KONTEN (IMAGE) ---
+        # Logic Scale
         base_scale = 1.0
         if pw > 0 and ph > 0:
             scale_w = cw / pw
             scale_h = ch / ph
-            
-            # CEK FIT MODE
             fit_mode = s.get("fit", "cover")
-            
-            if fit_mode == "contain":
-                # Fit Inside (Ada bar hitam)
-                base_scale = min(scale_w, scale_h)
-            else:
-                # Cover / Fill (Zoom Center - Request Anda)
-                # Menggunakan MAX akan memilih sisi mana yang harus di-fit
-                # agar TIDAK ADA ruang kosong.
-                base_scale = max(scale_w, scale_h)
+            if fit_mode == "contain": base_scale = min(scale_w, scale_h)
+            else: base_scale = max(scale_w, scale_h)
 
-        # Scale user (100 = 100% dari base scale)
         final_scale = base_scale * (s["scale"] / 100.0)
         
-        # --- 2. TRANSFORMATION (CENTER PIVOT) ---
-        # Pindah ke Tengah Canvas
-        painter.translate(cw / 2, ch / 2)
+        # Logic Transform
+        # Kita HAPUS 'painter.translate(s["x"], s["y"])' manual
+        # Karena posisi sudah ditangani oleh sistem Qt via self.pos()
         
-        # Geser User (Pan)
-        painter.translate(s["x"], s["y"])
+        # Pindah ke Tengah Canvas (Relative terhadap Item Origin)
+        painter.translate(cw / 2, ch / 2)
         
         # Scale
         painter.scale(final_scale, final_scale)
@@ -482,20 +473,29 @@ class BackgroundItem(VideoItem):
         # Geser Pivot Image ke Tengah
         painter.translate(-pw / 2, -ph / 2)
         
-        # Draw
+        # Draw Image
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.drawPixmap(0, 0, self.current_pixmap)
         
-        painter.restore()
+        painter.restore() # Restore ke koordinat item lokal (0,0 = item pos)
 
-        # Vignette
+        # --- 2. VIGNETTE (STATIC ON CANVAS) ---
         if s.get("vig", 0) > 0:
             vig_strength = int(s["vig"] * 2.55)
             radius = max(cw, ch) / 1.2
+            
             grad = QRadialGradient(cw / 2, ch / 2, radius)
             grad.setColorAt(0, QColor(0, 0, 0, 0))
             grad.setColorAt(1, QColor(0, 0, 0, vig_strength))
+            
+            # --- TEKNIK PENTING: KOMPENSASI POSISI ---
+            # Kita 'mundurkan' painter sejauh posisi item saat ini.
+            # Jadi (0,0) painter kembali pas di (0,0) Scene/Layar.
+            painter.save()
+            painter.translate(-curr_x, -curr_y) 
+            
             painter.fillRect(0, 0, int(cw), int(ch), QBrush(grad))
+            painter.restore()
 
     def boundingRect(self):
         return QRectF(-5000, -5000, 10000, 10000)
