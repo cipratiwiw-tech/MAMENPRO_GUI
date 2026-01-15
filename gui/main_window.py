@@ -20,7 +20,8 @@ class VideoEditorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MamenPro_GUI")
-        self.resize(1500, 768)
+        # [UPGRADE 1] Ukuran Window Start lebih ideal untuk Video Editing (16:9 ratio)
+        self.resize(1600, 900)
         
         if STYLESHEET:
             self.setStyleSheet(STYLESHEET)
@@ -33,7 +34,10 @@ class VideoEditorApp(QMainWindow):
         self.controller = EditorController(self)
         
     def _init_ui(self):
+        # Gunakan style sheet khusus untuk handle splitter agar terlihat modern
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(2) # Garis pembatas tipis elegan
+        
         self.setCentralWidget(self.splitter)
         
         self.preview = PreviewPanel()
@@ -44,9 +48,22 @@ class VideoEditorApp(QMainWindow):
         self.splitter.addWidget(self.preview)
         self.splitter.addWidget(self.setting)
         
-        self.splitter.setSizes([200, 800, 300])
-        self.preview.scene.setSceneRect(0, 0, 1080, 1920) 
+        # [UPGRADE 2] Distribusi Lebar Panel (Kiri, Tengah, Kanan)
+        # Total +/- 1600px: Kiri 300, Tengah Dominan, Kanan 360 (biar ga kepotong)
+        self.splitter.setSizes([300, 940, 360]) 
+        
+        # [UPGRADE 3] Stretch Factor (Logika Agar Center Tidak "Memakan" Sisi)
+        # 0 = Fixed/Statis (tidak prioritas resize), 1 = Expand (mengisi sisa ruang)
+        self.splitter.setStretchFactor(0, 0) # Kiri: Pertahankan ukuran
+        self.splitter.setStretchFactor(1, 1) # Tengah: Isi ruang sisa
+        self.splitter.setStretchFactor(2, 0) # Kanan: Pertahankan ukuran
+        
+        # Mencegah panel hilang total saat di-drag mentok
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(2, False)
 
+        self.preview.scene.setSceneRect(0, 0, 1080, 1920)
+        
     # --- [BARU] EVENT PENUTUPAN APLIKASI ---
     def closeEvent(self, event):
         """Dipanggil otomatis saat tombol X diklik"""

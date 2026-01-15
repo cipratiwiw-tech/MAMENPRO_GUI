@@ -20,7 +20,10 @@ class LayerPanel(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(320)
+        
+        # [UPGRADE] Kurangi sedikit dari 320 ke 300 agar Preview lebih luas
+        self.setFixedWidth(300) 
+        
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         
