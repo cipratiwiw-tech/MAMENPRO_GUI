@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QLabel, QSpinBox, 
                              QPushButton, QComboBox, QTextEdit, QScrollArea, 
                              QCheckBox, QHBoxLayout, QFontComboBox, QLineEdit, 
-                             QButtonGroup, QColorDialog, QFontComboBox, QFontDialog)
+                             QButtonGroup, QColorDialog, QFontComboBox, QFontDialog, QDoubleSpinBox)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -15,6 +15,9 @@ class TextTab(QScrollArea):
         self.layout = QVBoxLayout(container)
         self.layout.setSpacing(15)
         
+        # [BARU] 1. Panel Waktu (Timing)
+        self._init_time_attributes()
+        
         self._init_text_style()
         self._init_paragraph_style()
         
@@ -22,27 +25,48 @@ class TextTab(QScrollArea):
         self.setWidget(container)
         self._connect_signals()
 
+    # --- [BARU] LOGIKA WAKTU DI TEXT TAB ---
+    def _init_time_attributes(self):
+        self.group_time = QGroupBox("TIMING (SECONDS)")
+        self.group_time.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #e1b12c; margin-top: 10px; } QGroupBox::title { color: #e1b12c; }")
+        
+        hbox = QHBoxLayout(self.group_time)
+        
+        # Start Time
+        self.spn_start = QDoubleSpinBox()
+        self.spn_start.setRange(0.0, 36000.0)
+        self.spn_start.setSingleStep(0.1)
+        self.spn_start.setSuffix(" s")
+        
+        # End Time (Ganti Duration)
+        self.spn_end = QDoubleSpinBox()
+        self.spn_end.setRange(0.0, 36000.0)
+        self.spn_end.setSingleStep(0.1)
+        self.spn_end.setSuffix(" s")
+        self.spn_end.setValue(5.0)
+        
+        hbox.addWidget(QLabel("Start:"))
+        hbox.addWidget(self.spn_start)
+        hbox.addWidget(QLabel("End:")) # Label Ganti
+        hbox.addWidget(self.spn_end)
+        
+        self.layout.addWidget(self.group_time)
+        
     def _init_text_style(self):
         group = QGroupBox("GAYA TEKS & KONTEN")
         layout = QVBoxLayout(group)
         layout.setSpacing(10)
-        # Di dalam _init_text_style pada text_tab.py
-        self.font_combo = QFontComboBox()
-        # Tambahkan baris ini untuk memastikan ukuran awal valid
-        self.font_combo.setFont(QFont("Segoe UI", 12)) 
-        layout.addWidget(QLabel("Jenis Font:"))
-        layout.addWidget(self.font_combo)
-        
+                
         # 1. Konten Teks (Unified Input)
-        # Menggantikan QLineEdit lama dengan QTextEdit 4 baris
         layout.addWidget(QLabel("Isi Teks / Paragraf:"))
         self.txt_input = QTextEdit()
         self.txt_input.setPlaceholderText("Ketik teks di sini...")
-        self.txt_input.setMaximumHeight(80) # Kira-kira 4 baris
+        self.txt_input.setMaximumHeight(80) 
         layout.addWidget(self.txt_input)
         
-        # 2. Font & Style
+        # 2. Font & Style (Hanya satu kali definisi)
         self.font_combo = QFontComboBox()
+        self.font_combo.setFont(QFont("Segoe UI", 12)) # Set default size visual
         layout.addWidget(QLabel("Jenis Font:"))
         layout.addWidget(self.font_combo)
         
@@ -166,6 +190,11 @@ class TextTab(QScrollArea):
             self._emit_change()
 
     def _connect_signals(self):
+        # Time Signals
+        self.spn_start.valueChanged.connect(self._emit_change)
+        self.spn_end.valueChanged.connect(self._emit_change)
+
+        # Text Signals
         self.txt_input.textChanged.connect(self._emit_change)
         self.font_combo.currentFontChanged.connect(self._emit_change)
         self.spn_size.valueChanged.connect(self._emit_change)
@@ -176,7 +205,7 @@ class TextTab(QScrollArea):
         self.chk_shadow.toggled.connect(self._emit_change)
         self.align_group.buttonClicked.connect(self._emit_change)
         self.spn_line_height.valueChanged.connect(self._emit_change)
-
+        
     def _emit_change(self):
         align = "center" # Default
         if self.btn_align_left.isChecked(): align = "left"
@@ -184,6 +213,10 @@ class TextTab(QScrollArea):
         elif self.btn_align_justify.isChecked(): align = "justify"
 
         data = {
+            # Kirim data waktu juga
+            "start_time": self.spn_start.value(),
+            "end_time": self.spn_end.value(),
+            
             "text_content": self.txt_input.toPlainText(), # Satu sumber input
             "font": self.font_combo.currentFont().family(),
             "font_size": self.spn_size.value(),
@@ -203,6 +236,18 @@ class TextTab(QScrollArea):
 
     def set_values(self, data):
         self.blockSignals(True)
+        
+        # [SINKRONISASI WAKTU SAAT LAYER DIKLIK]
+        if "start_time" in data:
+            self.spn_start.setValue(float(data["start_time"]))
+        
+        # Hitung durasi (End - Start)
+        if "end_time" in data and data["end_time"] is not None:
+             # Ambil start dari data atau widget
+            s = float(data.get("start_time", self.spn_start.value()))
+            e = float(data["end_time"])
+            self.spn_end.setValue(max(0.1, e - s))
+            
         # Populate Text Input (Baik itu Text biasa atau Paragraf)
         if "text_content" in data: 
             self.txt_input.setText(data["text_content"])

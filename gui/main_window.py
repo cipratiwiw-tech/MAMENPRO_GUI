@@ -20,7 +20,7 @@ class VideoEditorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MamenPro Editor (Refactored MVC)")
-        self.resize(1366, 768)
+        self.resize(1500, 768)
         
         if STYLESHEET:
             self.setStyleSheet(STYLESHEET)

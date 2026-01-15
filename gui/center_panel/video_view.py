@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsView, QFrame, QGraphicsRectItem, QGraphicsPathItem
 from PySide6.QtGui import QPainter, QMouseEvent, QWheelEvent, QBrush, QColor, QPen, QPainterPath, QDragEnterEvent, QDragMoveEvent, QDropEvent
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 # Import hanya untuk pengecekan tipe (agar View tau mana yang VideoItem)
 from gui.center_panel.video_item import VideoItem 
@@ -28,6 +28,8 @@ class DimmingOverlay(QGraphicsPathItem):
         self.setPath(path)
 
 class VideoGraphicsView(QGraphicsView):
+    # [BARU] Sinyal saat ada file di-drop
+    sig_dropped = Signal()
     def __init__(self, scene):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing)
@@ -147,7 +149,8 @@ class VideoGraphicsView(QGraphicsView):
                     # Update settings agar controller (LayerPanel) tersinkronisasi
                     # (Opsional: controller biasanya listen sinyal selection/change)
                     item.settings["content_type"] = "media"
-                    
+                    # [PENTING] Emit sinyal ke Controller
+                    self.sig_dropped.emit()
                     event.accept()
                     return
 

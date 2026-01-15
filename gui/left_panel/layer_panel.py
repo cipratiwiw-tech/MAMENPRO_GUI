@@ -70,16 +70,30 @@ class LayerPanel(QWidget):
         bg_main_layout = QVBoxLayout(self.group_bg)
         bg_main_layout.setSpacing(5)
         
+        # --- [MODIFIKASI LAYOUT BARIS 1] ---
         row1_layout = QHBoxLayout()
+        
+        # 1. Tombol Add (Stretch dikurangi jadi 3 biar muat)
         self.btn_add_bg = QPushButton("Add Background")
         self.btn_add_bg.setStyleSheet("background-color: #2d3436; color: white;")
+        
+        # 2. Tombol Lock (BARU)
+        self.chk_bg_lock = QCheckBox("🔒")
+        self.chk_bg_lock.setToolTip("Lock Position & Zoom")
+        self.chk_bg_lock.setStyleSheet("font-weight: bold; color: #dfe6e9;")
+        self.chk_bg_lock.toggled.connect(self._on_bg_lock_toggled) # Connect ke fungsi baru
+        
+        # 3. Tombol Toggle ON/OFF
         self.chk_bg_toggle = QCheckBox("ON")
         self.chk_bg_toggle.setChecked(True)
         self.chk_bg_toggle.setStyleSheet("font-weight: bold;")
         self.chk_bg_toggle.toggled.connect(self._on_bg_toggled_internal)
         
-        row1_layout.addWidget(self.btn_add_bg, stretch=4)
+        # Susun Layout (Add=3, Lock=1, Toggle=1)
+        row1_layout.addWidget(self.btn_add_bg, stretch=3)
+        row1_layout.addWidget(self.chk_bg_lock, stretch=1)
         row1_layout.addWidget(self.chk_bg_toggle, stretch=1)
+        
         bg_main_layout.addLayout(row1_layout)
 
         bg_grid = QGridLayout()
@@ -189,27 +203,62 @@ class LayerPanel(QWidget):
             "y": self.spin_bg_y.value(),
             "scale": self.spin_bg_scale.value(),
             "blur": self.spn_blur.value(),
-            "vig": self.spn_vignette.value()
+            "vig": self.spn_vignette.value(),
+            "lock": self.chk_bg_lock.isChecked() # ✅ BARU: Kirim status lock
         }
         self.sig_bg_changed.emit(data)
-
+        
+    def _on_bg_lock_toggled(self, checked):
+        """Handler saat tombol Lock diklik"""
+        # Ubah warna icon gembok
+        if checked:
+            self.chk_bg_lock.setStyleSheet("font-weight: bold; color: #ff7675;") 
+        else:
+            self.chk_bg_lock.setStyleSheet("font-weight: bold; color: #dfe6e9;") 
+            
+        # 1. Update tampilan UI (Enable/Disable spinbox)
+        self.show_bg_controls(visible=True)
+        
+        # 2. ✅ PENTING: Picu sinyal agar BackgroundItem tau dia dikunci
+        self._emit_bg_change()
+        
     def _on_bg_toggled_internal(self, checked):
         self.btn_add_bg.setEnabled(checked)
         self.btn_add_bg.setStyleSheet("background-color: #2d3436; color: white;" if checked else "background-color: #636e72; color: #b2bec3;")
-        self.spin_bg_x.setEnabled(checked)
-        self.spin_bg_y.setEnabled(checked)
-        self.spin_bg_scale.setEnabled(checked)
-        self.spn_vignette.setEnabled(checked)
-        self.spn_blur.setEnabled(checked)
+        
         self.chk_bg_toggle.setText("ON" if checked else "OFF")
+        
+        # Panggil fungsi sentral untuk atur enable/disable widget
+        self.show_bg_controls(visible=True)
+        
         self.sig_bg_toggle.emit(checked)
         
     def show_bg_controls(self, visible=True):
-        is_on = self.chk_bg_toggle.isChecked()
-        should_enable = visible and is_on
-        self.spin_bg_x.setEnabled(should_enable)
-        self.spin_bg_y.setEnabled(should_enable)
-        self.spin_bg_scale.setEnabled(should_enable)
+        """
+        Mengatur status Enable/Disable input background.
+        Logika:
+        1. Jika Toggle OFF -> Semua Mati.
+        2. Jika Toggle ON & Lock ON -> Transform Mati, Efek Hidup.
+        3. Jika Toggle ON & Lock OFF -> Semua Hidup.
+        """
+        is_bg_on = self.chk_bg_toggle.isChecked()
+        is_locked = self.chk_bg_lock.isChecked()
+        
+        # Tombol Lock hanya aktif jika BG menyala
+        self.chk_bg_lock.setEnabled(is_bg_on)
+
+        # 1. Kontrol Transform (X, Y, Scale)
+        # Syarat: Panel Visible + BG Nyala + TIDAK dikunci
+        can_transform = visible and is_bg_on and not is_locked
+        self.spin_bg_x.setEnabled(can_transform)
+        self.spin_bg_y.setEnabled(can_transform)
+        self.spin_bg_scale.setEnabled(can_transform)
+            
+        # 2. Kontrol Efek (Blur, Vignette)
+        # Syarat: Panel Visible + BG Nyala (Lock tidak berpengaruh)
+        can_edit_effect = visible and is_bg_on
+        self.spn_vignette.setEnabled(can_edit_effect)
+        self.spn_blur.setEnabled(can_edit_effect)
             
     def set_bg_values(self, data):
         self.blockSignals(True)

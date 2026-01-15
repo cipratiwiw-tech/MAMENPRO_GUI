@@ -64,23 +64,73 @@ class EditorController:
         self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
         self.layer_panel.render_tab.btn_render.clicked.connect(self.on_render_clicked)
         self.layer_panel.render_tab.btn_stop.clicked.connect(self.on_stop_render_clicked)
-
+        
+    # --- LOGIKA OTOMATISASI DURASI GLOBAL ---
+    def recalculate_global_duration(self):
+        """
+        Scan semua layer, cari end_time terpanjang, dan set sebagai durasi global.
+        """
+        # Default minimal 5 detik jika kosong
+        max_end = 5.0
+        
+        # Loop semua item di scene
+        for item in self.preview.scene.items():
+            # Hanya cek VideoItem (bukan background/guide/overlay)
+            if isinstance(item, VideoItem):
+                # Pastikan item punya end_time valid
+                if hasattr(item, 'end_time') and item.end_time is not None:
+                    if item.end_time > max_end:
+                        max_end = item.end_time
+        
+        # Update Engine & Slider
+        self.engine.set_duration(max_end)
+        
+        # Update Range Slider (Asumsi presisi 1/100 detik)
+        self.preview.timeline_slider.blockSignals(True)
+        self.preview.timeline_slider.setRange(0, int(max_end * 100))
+        self.preview.timeline_slider.blockSignals(False)
+        
+        print(f"[AUTO-DURATION] Global Duration Updated to: {max_end:.2f}s")
+        
     # --- UI & SELECTION HANDLERS ---
     def on_setting_changed(self, data):
         selected = self.preview.scene.selectedItems()
         if not selected or not isinstance(selected[0], VideoItem): return
         item = selected[0]
         
-        item.settings.update(data)
+        # [MODIFIKASI] Handle End Time Input
+        if "start_time" in data or "end_time" in data:
+            new_start = float(data.get("start_time", item.start_time))
+            
+            # Ambil End Time dari input (jika user ubah end)
+            if "end_time" in data:
+                new_end = float(data["end_time"])
+            else:
+                # Jika user cuma ubah start, end ikut bergeser (opsional) atau tetap?
+                # Jika inputnya "End Time", biasanya user ingin durasi dinamis.
+                # Kita hitung durasi berdasarkan End Time.
+                new_end = item.end_time if item.end_time is not None else (new_start + 5.0)
+
+            # Hitung Durasi Baru (Duration = End - Start)
+            new_dur = max(0.1, new_end - new_start)
+            
+            # Update Item
+            item.set_time_range(new_start, new_dur)
+            
+            # Recalculate global duration
+            self.recalculate_global_duration()
+            item.apply_global_time(self.engine.current_time)
+        
+        # Filter 'start_time'/'end_time' agar tidak masuk ke settings dictionary umum
+        filtered_data = {k: v for k, v in data.items() if k not in ['start_time', 'end_time']}
+        item.settings.update(filtered_data)
 
         if data.get("type") == "text":
             if "rotation" in data: item.setRotation(data["rotation"])
             item.refresh_text_render()
         else:
-            if "x" in data and "y" in data:
-                item.setPos(data["x"], data["y"])
-            if "frame_rot" in data:
-                item.setRotation(data["frame_rot"])
+            if "x" in data and "y" in data: item.setPos(data["x"], data["y"])
+            if "frame_rot" in data: item.setRotation(data["frame_rot"])
             if "frame_w" in data and "frame_h" in data:
                 item.setRect(0, 0, data["frame_w"], data["frame_h"])
                 item.setTransformOriginPoint(item.rect().center())
@@ -90,32 +140,45 @@ class EditorController:
 
     def on_canvas_selection_update_ui(self):
         selected = self.preview.scene.selectedItems()
-        is_video_item = False
+        
+        # Default: Tombol konten MATI
+        enable_content_buttons = False
+        
         if selected and isinstance(selected[0], VideoItem):
-            is_video_item = True
             item = selected[0]
             
-            # Sync visual state to settings dictionary
+            # [LOGIKA BARU] Cek apakah item ini adalah Background?
+            is_bg = isinstance(item, BackgroundItem)
+            
+            # Tombol Content (+Video/Img, +Teks) hanya aktif jika item BUKAN Background
+            enable_content_buttons = not is_bg
+            
+            # Sync settings seperti biasa (tetap update panel kanan meski itu BG)
             item.settings.update({
                 "x": int(item.pos().x()),
                 "y": int(item.pos().y()),
                 "frame_rot": int(item.rotation()),
                 "frame_w": int(item.rect().width()),
-                "frame_h": int(item.rect().height())
+                "frame_h": int(item.rect().height()),
+                "start_time": item.start_time,
+                "end_time": item.end_time
             })
             
             self.setting.set_values(item.settings)
             self.setting.set_active_tab_by_type(item.settings.get("content_type", "media"))
             
+            # Logika tombol delete (Background biasanya tidak bisa didelete lewat tombol del layer)
             is_locked = item.settings.get("lock", False)
-            self.layer_panel.set_delete_enabled(not is_locked)
-            self.layer_panel.set_reorder_enabled(not is_locked)
+            self.layer_panel.set_delete_enabled(not is_locked and not is_bg)
+            self.layer_panel.set_reorder_enabled(not is_locked and not is_bg)
         else:
+            # Tidak ada yang dipilih
             self.layer_panel.set_delete_enabled(False)
             self.layer_panel.set_reorder_enabled(False)
             
+        # Update status tombol di Panel Kiri
         if hasattr(self.layer_panel, 'set_content_button_enabled'):
-            self.layer_panel.set_content_button_enabled(is_video_item)
+            self.layer_panel.set_content_button_enabled(enable_content_buttons)
 
     # --- ITEM CREATION ---
     def on_create_visual_item(self, frame_code, shape="portrait"):
@@ -127,6 +190,8 @@ class EditorController:
         
         self.preview.scene.clearSelection()
         item.setSelected(True)
+        
+        # [PENTING] Recalculate saat item baru dibuat
         self.recalculate_global_duration()
 
     def on_add_text_clicked(self): self._create_text_item("Judul", False)
@@ -223,25 +288,63 @@ class EditorController:
 
     # --- MEDIA & ENGINE HELPERS ---
     def recalculate_global_duration(self):
-        max_d = max([i.duration_s for i in self.preview.scene.items() if isinstance(i, VideoItem)] + [5.0])
-        self.engine.set_duration(max_d)
-        self.preview.timeline_slider.setRange(0, int(max_d * 100))
+        """
+        Hitung durasi global berdasarkan waktu akhir (end_time) 
+        paling panjang dari semua layer yang ada di timeline.
+        """
+        max_end = 5.0 # Durasi minimum proyek (default)
+        
+        # Scan semua item di canvas
+        for item in self.preview.scene.items():
+            # Pastikan item adalah VideoItem
+            if isinstance(item, VideoItem):
+                # Periksa apakah item memiliki atribut end_time yang valid
+                # Kita gunakan getattr untuk keamanan jika atribut belum terinisialisasi
+                end_t = getattr(item, 'end_time', None)
+                
+                if end_t is not None:
+                    if end_t > max_end:
+                        max_end = end_t
+        
+        # Set durasi engine & slider
+        self.engine.set_duration(max_end)
+        
+        # Update Slider Range (dikali 100 untuk presisi)
+        self.preview.timeline_slider.blockSignals(True)
+        self.preview.timeline_slider.setRange(0, int(max_end * 100))
+        self.preview.timeline_slider.blockSignals(False)
+        
+        print(f"[AUTO-DURATION] Global Duration Updated to: {max_end:.2f}s")
 
     def on_add_bg_clicked(self):
         if not self.layer_panel.chk_bg_toggle.isChecked(): return
         data = MediaManager.open_media_dialog(self.view, "Pilih Background")
         if not data: return
         
+        # 1. Hapus background lama jika ada
         if self.bg_item: self.preview.scene.removeItem(self.bg_item)
+        
+        # 2. Buat Background Item Baru
         self.bg_item = BackgroundItem(data['path'], self.preview.scene.sceneRect())
         self.bg_item.seek_to(0)
         
-        geo = BackgroundService.calculate_bg_geometry(self.bg_item.current_pixmap, self.preview.scene.sceneRect())
-        if geo:
-            self.bg_item.update_bg_settings(geo)
-            self.layer_panel.set_bg_values(self.bg_item.settings)
-            self.layer_panel.show_bg_controls(True)
+        # --- RESET DEFAULT KE COVER (CENTER ZOOM) ---
+        default_settings = {
+            'x': 0, 
+            'y': 0, 
+            'scale': 100, 
+            'fit': 'cover', # ✅ Ini kuncinya: COVER
+            'blur': 0,
+            'vig': 0
+        }
         
+        self.bg_item.update_bg_settings(default_settings)
+        
+        # Update UI Panel Kiri agar angka X/Y jadi 0
+        self.layer_panel.set_bg_values(self.bg_item.settings)
+        self.layer_panel.show_bg_controls(True)
+        
+        # 3. Masukkan ke Scene
         self.preview.scene.addItem(self.bg_item)
         self.recalculate_global_duration()
 
@@ -252,9 +355,12 @@ class EditorController:
         if data:
             selected[0].set_content(data['path'])
             self.setting.set_values(selected[0].settings)
+            
+            # [PENTING] Recalculate setelah konten masuk (durasi video mungkin panjang)
             self.recalculate_global_duration()
+            
             self.preview.scene.update()
-
+            
     def on_layer_reordered(self):
         lw = self.layer_panel.list_layers
         for i in range(lw.count()):
@@ -270,16 +376,29 @@ class EditorController:
             if hasattr(item, 'name') and item.name == frame_code:
                 self.preview.scene.removeItem(item)
                 break
+        
+        # [PENTING] Recalculate setelah hapus (durasi mungkin memendek)
         self.recalculate_global_duration()
 
     def update_ui_from_engine(self, t):
         self.preview.timeline_slider.blockSignals(True)
-        self.preview.timeline_slider.setValue(int(t * 100))
+        
+        # [FIX] Gunakan logika yang sama dengan Range Slider (t * 100)
+        # Bukan persentase 0-1000
+        val = int(t * 100)
+        self.preview.timeline_slider.setValue(val)
+            
         self.preview.timeline_slider.blockSignals(False)
+        
+        # Sinkronisasi Terpusat (Global Playhead)
         for item in self.preview.scene.items():
-            if hasattr(item, 'seek_to'): item.seek_to(t)
+            if hasattr(item, 'apply_global_time'):
+                item.apply_global_time(t)
+            elif hasattr(item, 'seek_to'):
+                item.seek_to(t)
 
     def on_slider_moved(self, value):
+        # Value adalah (detik * 100), jadi kita bagi 100 untuk dapat detik asli
         if not self.engine.timer.isActive():
             self.engine.set_time(value / 100.0)
 

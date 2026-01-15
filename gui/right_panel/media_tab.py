@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QLabel, QSpinBox, 
-                             QPushButton, QSlider, QGridLayout, QScrollArea, QCheckBox, QHBoxLayout, QColorDialog)
+                             QPushButton, QSlider, QGridLayout, QScrollArea, QCheckBox, QHBoxLayout, QColorDialog, QDoubleSpinBox)
 from PySide6.QtCore import Qt, Signal
 
 class MediaTab(QScrollArea):
@@ -12,13 +12,42 @@ class MediaTab(QScrollArea):
         self.layout = QVBoxLayout(container)
         self.layout.setSpacing(15)
         
+        # Panel Timing (Start & End)
+        self._init_time_attributes()
+        
         self._init_video_attributes() 
         self._init_frame_attributes() 
         
         self.layout.addStretch()
         self.setWidget(container)
         self._connect_signals()
-
+    
+    def _init_time_attributes(self):
+        self.group_time = QGroupBox("TIMING (SECONDS)")
+        self.group_time.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #e1b12c; margin-top: 10px; } QGroupBox::title { color: #e1b12c; }")
+        
+        grid = QGridLayout(self.group_time)
+        
+        # Start Time
+        self.spn_start = QDoubleSpinBox()
+        self.spn_start.setRange(0.0, 36000.0) # Max 10 jam
+        self.spn_start.setSingleStep(0.1)
+        self.spn_start.setSuffix(" s")
+        
+        # [MODIFIKASI] Ganti Duration jadi End Time
+        self.spn_end = QDoubleSpinBox()
+        self.spn_end.setRange(0.0, 36000.0)
+        self.spn_end.setSingleStep(0.1)
+        self.spn_end.setSuffix(" s")
+        self.spn_end.setValue(5.0)
+        
+        grid.addWidget(QLabel("Start Time:"), 0, 0)
+        grid.addWidget(self.spn_start, 0, 1)
+        grid.addWidget(QLabel("End Time:"), 0, 2)
+        grid.addWidget(self.spn_end, 0, 3)
+        
+        self.layout.addWidget(self.group_time)
+        
     def _init_video_attributes(self):
         self.group_video = QGroupBox("VIDEO ATTRIBUTES (CLIP ONLY)")
         self.group_video.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #555; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }")
@@ -112,7 +141,6 @@ class MediaTab(QScrollArea):
         grid.addWidget(QLabel("Height:"), 1, 2); grid.addWidget(self.spn_frame_h, 1, 3)
         
         self.spn_frame_rot = self._create_spinbox(-360, 360, 0, "°")
-        # [FIX] Rename ke chk_lock_frame agar SettingPanel lama tidak error
         self.chk_lock_frame = QCheckBox("Lock Frame") 
         
         grid.addWidget(QLabel("Rotation:"), 2, 0); grid.addWidget(self.spn_frame_rot, 2, 1)
@@ -137,44 +165,40 @@ class MediaTab(QScrollArea):
             self._emit_change()
 
     def _connect_signals(self):
-        # Frame
+        # Time
+        self.spn_start.valueChanged.connect(self._emit_change)
+        self.spn_end.valueChanged.connect(self._emit_change) # [MODIFIKASI] Connect End Time
+
+        # Frame Attributes
         self.spn_x.valueChanged.connect(self._emit_change)
         self.spn_y.valueChanged.connect(self._emit_change)
         self.spn_frame_w.valueChanged.connect(self._emit_change)
         self.spn_frame_h.valueChanged.connect(self._emit_change)
         self.spn_frame_rot.valueChanged.connect(self._emit_change)
-        self.chk_lock_frame.toggled.connect(self._emit_change) # Update connect
-    #     self.chk_lock_frame.toggled.connect(self._handle_lock_ui)
-
-    # # Tambahkan method baru ini di dalam class MediaTab
-    # def _handle_lock_ui(self, is_locked):
-    #     enabled = not is_locked
-    #     self.spn_x.setEnabled(enabled)
-    #     self.spn_y.setEnabled(enabled)
-    #     self.spn_frame_w.setEnabled(enabled)
-    #     self.spn_frame_h.setEnabled(enabled)
-    #     self.spn_frame_rot.setEnabled(enabled)
+        self.chk_lock_frame.toggled.connect(self._emit_change) 
         
-    #     # Transform
-    #     self.spn_scale.valueChanged.connect(self._emit_change)
-    #     self.spn_rot.valueChanged.connect(self._emit_change)
-    #     self.spn_opacity.valueChanged.connect(self._emit_change)
-    #     self.spn_sf_l.valueChanged.connect(self._emit_change)
-    #     self.spn_sf_r.valueChanged.connect(self._emit_change)
+        # Transform
+        self.spn_scale.valueChanged.connect(self._emit_change)
+        self.spn_rot.valueChanged.connect(self._emit_change)
+        self.spn_opacity.valueChanged.connect(self._emit_change)
+        self.spn_sf_l.valueChanged.connect(self._emit_change)
+        self.spn_sf_r.valueChanged.connect(self._emit_change)
         
-    #     # Color & Chroma
-    #     self.slider_bright.valueChanged.connect(self._emit_change)
-    #     self.slider_contrast.valueChanged.connect(self._emit_change)
-    #     self.slider_sat.valueChanged.connect(self._emit_change)
-    #     self.slider_hue.valueChanged.connect(self._emit_change)
-    #     self.spn_sim.valueChanged.connect(self._emit_change)
-    #     self.spn_smooth.valueChanged.connect(self._emit_change)
-    #     self.spn_spill_r.valueChanged.connect(self._emit_change)
-    #     self.spn_spill_g.valueChanged.connect(self._emit_change)
-    #     self.spn_spill_b.valueChanged.connect(self._emit_change)
+        # Color & Chroma
+        self.slider_bright.valueChanged.connect(self._emit_change)
+        self.slider_contrast.valueChanged.connect(self._emit_change)
+        self.slider_sat.valueChanged.connect(self._emit_change)
+        self.slider_hue.valueChanged.connect(self._emit_change)
+        self.spn_sim.valueChanged.connect(self._emit_change)
+        self.spn_smooth.valueChanged.connect(self._emit_change)
+        self.spn_spill_r.valueChanged.connect(self._emit_change)
+        self.spn_spill_g.valueChanged.connect(self._emit_change)
+        self.spn_spill_b.valueChanged.connect(self._emit_change)
 
     def _emit_change(self):
         data = {
+            "start_time": self.spn_start.value(),
+            "end_time": self.spn_end.value(),     # [MODIFIKASI] Kirim End Time
             "x": self.spn_x.value(), "y": self.spn_y.value(),
             "frame_w": self.spn_frame_w.value(), "frame_h": self.spn_frame_h.value(),
             "frame_rot": self.spn_frame_rot.value(), "lock": self.chk_lock_frame.isChecked(),
@@ -193,6 +217,20 @@ class MediaTab(QScrollArea):
         is_bg = data.get("is_bg", False)
         self.group_video.setEnabled(not is_bg)
         self.group_video.setTitle("VIDEO ATTRIBUTES (DISABLED FOR BG)" if is_bg else "VIDEO ATTRIBUTES (CLIP ONLY)")
+        
+        # --- [CRITICAL] SYNC TIME LOGIC ---
+        if "start_time" in data: 
+            self.spn_start.setValue(float(data["start_time"]))
+        
+        # [MODIFIKASI] Set End Time langsung
+        if "end_time" in data and data["end_time"] is not None:
+            self.spn_end.setValue(float(data["end_time"]))
+        else:
+            # Fallback jika data tidak lengkap
+            s = self.spn_start.value()
+            self.spn_end.setValue(s + 5.0)
+            
+        # --- End Time Logic ---
         
         if "x" in data: self.spn_x.setValue(data["x"])
         if "y" in data: self.spn_y.setValue(data["y"])

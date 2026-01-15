@@ -2,7 +2,7 @@ import os
 from PySide6.QtGui import (QImage, QPixmap, QColor, QBrush, QPen, QFont, 
                            QPainter, QTextOption, QPainterPath, QFontMetrics, QRadialGradient)
 from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsBlurEffect
-from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtCore import Qt, QRectF, QPointF, QSizeF
 
 # Import PyAVClip jika tersedia, jika tidak sediakan placeholder agar tidak crash
 try:
@@ -33,8 +33,22 @@ class VideoItem(QGraphicsRectItem):
         self.name = name 
         self.file_path = file_path
         self.current_pixmap = None 
-        self.clip = None          
-        self.duration_s = 0.0
+        self.clip = None      
+            
+        # [BARU] Atribut Waktu (Start & End)
+        self.start_time = 0.0
+        self.end_time = 5.0  # Default 5 detik awal
+        self.source_duration = 0.0 # Durasi asli file sumber
+        
+        # [BARU] Status apakah layer sedang dalam rentang waktu tayang
+        self.is_in_time_range = True
+
+        self.current_handle = self.Handles["NONE"]
+        self.is_resizing = False
+        self.resize_start_pos = QPointF()
+        self.resize_start_rect = QRectF()
+        
+        self.is_drop_target = False
 
         # Status Resizing
         self.current_handle = self.Handles["NONE"]
@@ -52,6 +66,11 @@ class VideoItem(QGraphicsRectItem):
             "opacity": 100,
             "shape": shape, 
             "content_type": "media",
+            
+            # [BARU] Simpan info waktu ke settings agar bisa dirender/disave
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            
             "is_paragraph": False, "text_content": "Teks Baru", "font": "Arial", "font_size": 60,
             "text_color": "#ffffff", "bg_on": False, "bg_color": "#000000",
             "stroke_on": False, "stroke_width": 2, "stroke_color": "#000000",
@@ -69,9 +88,6 @@ class VideoItem(QGraphicsRectItem):
         
         if file_path: 
             self.set_content(file_path)
-            
-        # [BARU] Variable untuk status Drag & Drop Highlight
-        self.is_drop_target = False
 
     # --- SINKRONISASI GEOMETRI ---
     def itemChange(self, change, value):
@@ -83,128 +99,112 @@ class VideoItem(QGraphicsRectItem):
             self.settings["frame_rot"] = int(self.rotation())
         return super().itemChange(change, value)
 
-    # --- RENDERING UTAMA ---
+    # --- LOGIKA RENDERING (VISIBILITY) ---
     def paint(self, painter, option, widget):
+        # 1. Cek Status
+        should_draw_content = self.is_in_time_range
+        is_selected = self.isSelected()
+        
+        # Jika tidak aktif dan tidak dipilih -> Invisible total
+        if not should_draw_content and not is_selected:
+            return 
+
         painter.save()
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         
-        # 1. Masking Content agar tidak keluar dari Frame Rect
-        # Kita gunakan save/restore tambahan di sini agar clipping hanya berefek pada konten
-        painter.save()
-        path = QPainterPath()
-        path.addRect(self.rect())
-        painter.setClipPath(path)
-        
-        # Placeholder jika media kosong
-        if not self.current_pixmap:
-            painter.setBrush(QColor(40, 40, 40, 150))
-            painter.drawRect(self.rect())
-
-        # 2. Gambar Konten (Media atau Teks)
-        if self.current_pixmap and not self.current_pixmap.isNull():
-            is_text = self.settings.get("content_type") == "text"
-            painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
-
-            if is_text:
-                # Teks digambar apa adanya
-                painter.drawPixmap(0, 0, self.current_pixmap)
-            else:
-                # Media menggunakan transformasi Scale & Content Rotation
-                scale = self.settings.get("scale", 100) / 100.0
-                content_rot = self.settings.get("rot", 0)
-                
-                img_w = self.current_pixmap.width()
-                img_h = self.current_pixmap.height()
-                
-                painter.translate(self.rect().center())
-                painter.rotate(content_rot)
-                painter.scale(scale, scale)
-                painter.translate(-img_w/2, -img_h/2)
-                painter.drawPixmap(0, 0, self.current_pixmap)
-        
-        # Restore pertama untuk melepas Clipping Path & Transformasi Konten
-        painter.restore() 
-
-        # 3. [MODIFIKASI] Border & Handle Seleksi
-        # Tambahkan logika visual untuk Drop Target
-        if hasattr(self, 'is_drop_target') and self.is_drop_target:
-            # Highlight Merah/Oranye Tebal saat file ditahan di atas item ini
-            pen = QPen(QColor("#ff9f43"), 4)
-            pen.setJoinStyle(Qt.MiterJoin)
-            painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(self.rect())
+        # 2. GAMBAR KONTEN (HANYA JIKA DALAM DURASI)
+        if should_draw_content:
+            # Masking Content agar tidak keluar dari Frame Rect
+            path = QPainterPath()
+            path.addRect(self.rect())
+            painter.setClipPath(path)
             
-            # Label "DROP HERE" / "LEPAS DI SINI"
-            painter.setPen(QColor("white"))
-            font = painter.font()
-            font.setBold(True)
-            font.setPointSize(12) # Ukuran disesuaikan
-            painter.setFont(font)
-            painter.drawText(self.rect(), Qt.AlignCenter, "LEPAS DI SINI")
+            # Placeholder (Kotak abu-abu jika pixmap kosong)
+            if not self.current_pixmap:
+                painter.setBrush(QColor(40, 40, 40, 255))
+                painter.drawRect(self.rect())
 
-        elif self.isSelected() and not self.settings.get("lock", False): 
-            # Hanya muncul jika item dipilih dan tidak dikunci
+            # Gambar Pixmap (Video/Gambar/Teks)
+            if self.current_pixmap and not self.current_pixmap.isNull():
+                is_text = self.settings.get("content_type") == "text"
+                painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
+
+                if is_text:
+                    painter.drawPixmap(0, 0, self.current_pixmap)
+                else:
+                    scale = self.settings.get("scale", 100) / 100.0
+                    content_rot = self.settings.get("rot", 0)
+                    
+                    img_w = self.current_pixmap.width()
+                    img_h = self.current_pixmap.height()
+                    
+                    painter.translate(self.rect().center())
+                    painter.rotate(content_rot)
+                    painter.scale(scale, scale)
+                    painter.translate(-img_w/2, -img_h/2)
+                    painter.drawPixmap(0, 0, self.current_pixmap)
+            
+            # Matikan clipping sebelum menggambar UI luar
+            painter.setClipping(False)
+
+        # 3. UI OVERLAY & SELECTION (SELALU GAMBAR JIKA SELECTED)
+        # Ini akan menggambar kotak putus-putus meskipun konten tidak digambar (kosong)
+        
+        if self.is_drop_target:
+            # Efek Drop Target
+            pen = QPen(QColor("#ff9f43"), 4); pen.setJoinStyle(Qt.MiterJoin)
+            painter.setPen(pen); painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.rect())
+            painter.setPen(QColor("white")); font = painter.font(); font.setBold(True); font.setPointSize(12)
+            painter.setFont(font); painter.drawText(self.rect(), Qt.AlignCenter, "LEPAS DI SINI")
+
+        elif is_selected and not self.settings.get("lock", False): 
+            # Gambar Border Putus-putus & Handle Resize
             self._paint_ui_helpers(painter)
             
-        # Restore terakhir untuk painter.save() yang paling atas
+            # [BARU] Tambahkan indikator visual jika layer sedang "Mati" (Di luar durasi)
+            if not should_draw_content:
+                # Arsir diagonal tipis agar user tau area frame-nya
+                painter.setBrush(QBrush(QColor(255, 255, 255, 20), Qt.FDiagPattern))
+                painter.setPen(Qt.NoPen)
+                painter.drawRect(self.rect())
+                
+                # Label status
+                painter.setPen(QColor("#ff5555")) # Merah terang
+                painter.drawText(self.rect().topLeft() + QPointF(5, -5), f"OFF (Start: {self.start_time}s)")
+
         painter.restore()
-
-    def set_drop_highlight(self, active):
-        if self.is_drop_target != active:
-            self.is_drop_target = active
-            self.update() # Trigger repaint
-            
-    # --- INTERAKSI MOUSE (RESIZING) ---
-    def _get_handle_at(self, pos):
-        """Cek apakah mouse berada di atas handle resize (kanan bawah)"""
-        r = self.rect()
-        s = self.HANDLE_SIZE
-        if QRectF(r.right() - s/2, r.bottom() - s/2, s, s).contains(pos):
-            return self.Handles["BR"]
-        return self.Handles["NONE"]
-
-    def hoverMoveEvent(self, event):
-        if not self.settings["lock"]:
-            handle = self._get_handle_at(event.pos())
-            self.setCursor(Qt.SizeFDiagCursor if handle != self.Handles["NONE"] else Qt.SizeAllCursor)
-        super().hoverMoveEvent(event)
-
-    def mousePressEvent(self, event):
-        if self.settings["lock"]: return
-        handle = self._get_handle_at(event.pos())
-        if handle != self.Handles["NONE"]:
-            self.is_resizing = True
-            self.current_handle = handle
-            self.resize_start_pos = event.scenePos()
-            self.resize_start_rect = self.rect()
-            self.setFlag(QGraphicsItem.ItemIsMovable, False)
+    
+    # --- [CORE FIX] LOGIKA WAKTU (TANPA SETVISIBLE FALSE) ---
+    def set_time_range(self, start, duration=None):
+        self.start_time = max(0.0, float(start))
+        if duration is not None:
+            dur = max(0.1, float(duration)) 
+            self.end_time = self.start_time + dur
         else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.is_resizing:
-            diff = self.mapFromScene(event.scenePos()) - self.mapFromScene(self.resize_start_pos)
-            new_w = max(50, self.resize_start_rect.width() + diff.x())
-            new_h = max(50, self.resize_start_rect.height() + diff.y())
+            self.end_time = None
             
-            self.prepareGeometryChange()
-            self.setRect(0, 0, new_w, new_h)
-            self.settings["frame_w"], self.settings["frame_h"] = int(new_w), int(new_h)
-            
-            if self.settings.get("is_paragraph"): 
-                self.refresh_text_render()
-            
-            self.setTransformOriginPoint(self.rect().center())
-            self.update()
-        else:
-            super().mouseMoveEvent(event)
+        self.settings["start_time"] = self.start_time
+        self.settings["end_time"] = self.end_time
 
-    def mouseReleaseEvent(self, event):
-        self.is_resizing = False
-        self.setFlag(QGraphicsItem.ItemIsMovable, True)
-        super().mouseReleaseEvent(event)
+    def apply_global_time(self, t_global):
+        # 1. Cek apakah layer aktif di detik ini
+        in_range = (t_global >= self.start_time)
+        if self.end_time is not None:
+            in_range = in_range and (t_global <= self.end_time)
+        
+        self.is_in_time_range = in_range
 
+        # Agar item TIDAK PERNAH DESELECT otomatis.
+        self.setVisible(True) 
+        
+        # 2. Update Frame Video jika aktif
+        if in_range:
+            t_local = t_global - self.start_time
+            self.seek_to(t_local)
+        
+        self.update() # Trigger repaint untuk update visual ghost/normal
+        
     # --- KONTEN MEDIA & TEKS ---
     def set_content(self, path):
         self.file_path = path
@@ -214,12 +214,18 @@ class VideoItem(QGraphicsRectItem):
             self.current_pixmap = QPixmap(path)
         else:
             self._load_as_video(path)
+            
+        # [BARU] Otomatis set durasi layer sesuai konten saat drop
+        self.set_time_range(self.start_time, self.source_duration)
+          
         self.update()
 
     def set_text_content(self, text, is_paragraph=False):
         self.settings.update({
             "content_type": "text", "text_content": text, "is_paragraph": is_paragraph
         })
+        # Text default duration 5s
+        self.set_time_range(self.start_time, 5.0)
         self.refresh_text_render()
 
     def refresh_text_render(self):
@@ -273,7 +279,13 @@ class VideoItem(QGraphicsRectItem):
                 print(f"Error load video: {e}")
 
     def seek_to(self, t):
+        # [MODIFIKASI] Cek batas durasi sumber (Looping atau Stop)
+        # Di sini kita pakai logika CLAMP (tahan di frame terakhir jika lewat)
         if self.clip:
+            # Pastikan t tidak negatif
+            t = max(0, t)
+            # Opsional: Jika ingin looping video di dalam layer: t = t % self.source_duration
+            
             f = self.clip.get_frame_at(t)
             if f is not None:
                 img = QImage(f.data, f.shape[1], f.shape[0], f.shape[2]*f.shape[1], QImage.Format_RGB888)
@@ -297,54 +309,193 @@ class VideoItem(QGraphicsRectItem):
         painter.drawRect(0, -20, r.width(), 20)
         painter.setPen(Qt.black)
         painter.drawText(QRectF(0, -20, r.width(), 20), Qt.AlignCenter, self.name)
+   
+    def set_drop_highlight(self, active):
+        if self.is_drop_target != active:
+            self.is_drop_target = active
+            self.update() # Trigger repaint
+            
+    # --- INTERAKSI MOUSE (RESIZING) ---
+    def _get_handle_at(self, pos):
+        """Cek apakah mouse berada di atas handle resize (kanan bawah)"""
+        r = self.rect()
+        s = self.HANDLE_SIZE
+        if QRectF(r.right() - s/2, r.bottom() - s/2, s, s).contains(pos):
+            return self.Handles["BR"]
+        return self.Handles["NONE"]
 
-# --- CLASS BACKGROUND ---
+    def hoverMoveEvent(self, event):
+        if not self.settings["lock"]:
+            handle = self._get_handle_at(event.pos())
+            self.setCursor(Qt.SizeFDiagCursor if handle != self.Handles["NONE"] else Qt.SizeAllCursor)
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.settings["lock"]: return
+        handle = self._get_handle_at(event.pos())
+        if handle != self.Handles["NONE"]:
+            self.is_resizing = True
+            self.current_handle = handle
+            self.resize_start_pos = event.scenePos()
+            self.resize_start_rect = self.rect()
+            self.setFlag(QGraphicsItem.ItemIsMovable, False)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_resizing:
+            diff = self.mapFromScene(event.scenePos()) - self.mapFromScene(self.resize_start_pos)
+            new_w = max(50, self.resize_start_rect.width() + diff.x())
+            new_h = max(50, self.resize_start_rect.height() + diff.y())
+            
+            self.prepareGeometryChange()
+            self.setRect(0, 0, new_w, new_h)
+            self.settings["frame_w"], self.settings["frame_h"] = int(new_w), int(new_h)
+            
+            if self.settings.get("is_paragraph"): 
+                self.refresh_text_render()
+            
+            self.setTransformOriginPoint(self.rect().center())
+            self.update()
+        else:
+            super().mouseMoveEvent(event)
+
+    # [FIX] Perbaikan Logic Mouse Release
+    def mouseReleaseEvent(self, event):
+        self.is_resizing = False
+        
+        # HANYA aktifkan kembali Movable JIKA item TIDAK dikunci
+        is_locked = self.settings.get("lock", False)
+        if not is_locked:
+            self.setFlag(QGraphicsItem.ItemIsMovable, True)
+            
+        super().mouseReleaseEvent(event)
+
+# --- CLASS BACKGROUND (AUTO-RESET & FIT CENTER) ---
 class BackgroundItem(VideoItem):
     """
-    Spesialisasi VideoItem untuk latar belakang. 
-    Mengisi seluruh canvas dan mendukung efek Blur/Vignette.
+    Spesialisasi VideoItem untuk latar belakang.
+    Fitur:
+    - Auto Center & Reset saat load file baru
+    - Fit Mode: 'contain' (Muat dalam layar tanpa gepeng)
     """
     def __init__(self, path, scene_rect):
         super().__init__("BG", path, None)
         self.setZValue(-500) # Selalu paling bawah
+        
+        # Simpan ukuran scene
         self.scene_w = scene_rect.width()
         self.scene_h = scene_rect.height()
         
         self.blur_effect = QGraphicsBlurEffect()
         self.setGraphicsEffect(self.blur_effect)
-        self.settings.update({"blur": 0, "vig": 0, "is_bg": True})
+        
+        # Default Settings awal
+        self.settings.update({
+            "blur": 0, "vig": 0, "is_bg": True, 
+            "scale": 100, "x": 0, "y": 0, "fit": "cover" 
+        })
+        
+        self.blur_effect.setEnabled(False)
+        self.set_time_range(0, None)
+
+    # --- PERBAIKAN UTAMA: Override set_content ---
+    # Agar setiap ganti file, posisi dipaksa reset ke tengah
+    def set_content(self, path):
+        super().set_content(path) # Load file via parent
+        
+        # FORCE RESET SETTINGS
+        self.settings["x"] = 0
+        self.settings["y"] = 0
+        self.settings["scale"] = 100
+        self.settings["fit"] = "cover" # Pastikan mode cover
+        
+        self.update() # Refresh tampilan
+
+    def set_scene_size(self, w, h):
+        self.scene_w = w
+        self.scene_h = h
+        self.update()
 
     def update_bg_settings(self, data):
         self.settings.update(data)
+        
+        # 1. Update Efek Blur
         if "blur" in data:
-            self.blur_effect.setBlurRadius(data["blur"])
+            val = data["blur"]
+            self.blur_effect.setEnabled(val > 0)
+            if val > 0: self.blur_effect.setBlurRadius(val)
+            
+        # 2. ✅ PENTING: Update Logic Lock Movable
+        if "lock" in data:
+            is_locked = data["lock"]
+            # Matikan kemampuan geser (Movable) jika Locked
+            self.setFlag(QGraphicsItem.ItemIsMovable, not is_locked)
+            # Matikan kemampuan seleksi (Selectable) jika mau (opsional), 
+            # tapi biasanya background tetap butuh seleksi untuk lihat properti.
+            # self.setFlag(QGraphicsItem.ItemIsSelectable, not is_locked) 
+
         self.update()
 
     def paint(self, painter, option, widget):
-        if not self.current_pixmap: return
+        if not self.current_pixmap: 
+            painter.fillRect(self.boundingRect(), Qt.black)
+            return
         
         painter.save()
         s = self.settings
-        img_w, img_h = self.current_pixmap.width(), self.current_pixmap.height()
         
-        # Background Rendering (Centered Scaling)
-        painter.translate(self.scene_w/2 + s["x"], self.scene_h/2 + s["y"])
-        painter.scale(s["scale"]/100.0, s["scale"]/100.0)
-        painter.translate(-img_w/2, -img_h/2)
+        cw, ch = self.scene_w, self.scene_h
+        pw, ph = self.current_pixmap.width(), self.current_pixmap.height()
+        
+        # --- 1. LOGIKA SCALE (COVER MODE) ---
+        base_scale = 1.0
+        if pw > 0 and ph > 0:
+            scale_w = cw / pw
+            scale_h = ch / ph
+            
+            # CEK FIT MODE
+            fit_mode = s.get("fit", "cover")
+            
+            if fit_mode == "contain":
+                # Fit Inside (Ada bar hitam)
+                base_scale = min(scale_w, scale_h)
+            else:
+                # Cover / Fill (Zoom Center - Request Anda)
+                # Menggunakan MAX akan memilih sisi mana yang harus di-fit
+                # agar TIDAK ADA ruang kosong.
+                base_scale = max(scale_w, scale_h)
+
+        # Scale user (100 = 100% dari base scale)
+        final_scale = base_scale * (s["scale"] / 100.0)
+        
+        # --- 2. TRANSFORMATION (CENTER PIVOT) ---
+        # Pindah ke Tengah Canvas
+        painter.translate(cw / 2, ch / 2)
+        
+        # Geser User (Pan)
+        painter.translate(s["x"], s["y"])
+        
+        # Scale
+        painter.scale(final_scale, final_scale)
+        
+        # Geser Pivot Image ke Tengah
+        painter.translate(-pw / 2, -ph / 2)
+        
+        # Draw
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.drawPixmap(0, 0, self.current_pixmap)
         
-        # Vignette Effect
-        if s.get("vig", 0) > 0:
-            grad = QRadialGradient(img_w/2, img_h/2, max(img_w, img_h)/1.5)
-            grad.setColorAt(0, QColor(0,0,0,0))
-            grad.setColorAt(1, QColor(0,0,0, int(s["vig"] * 2.55)))
-            painter.setBrush(grad)
-            painter.setPen(Qt.NoPen)
-            painter.drawRect(0, 0, img_w, img_h)
-            
         painter.restore()
 
+        # Vignette
+        if s.get("vig", 0) > 0:
+            vig_strength = int(s["vig"] * 2.55)
+            radius = max(cw, ch) / 1.2
+            grad = QRadialGradient(cw / 2, ch / 2, radius)
+            grad.setColorAt(0, QColor(0, 0, 0, 0))
+            grad.setColorAt(1, QColor(0, 0, 0, vig_strength))
+            painter.fillRect(0, 0, int(cw), int(ch), QBrush(grad))
+
     def boundingRect(self):
-        # Memperluas area agar background tetap terlihat meski di-zoom out
-        m = 2000
-        return QRectF(-m, -m, self.scene_w + m*2, self.scene_h + m*2)
+        return QRectF(-5000, -5000, 10000, 10000)
