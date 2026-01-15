@@ -129,68 +129,99 @@ class VideoItem(QGraphicsRectItem):
 
             # Gambar Pixmap
             if self.current_pixmap and not self.current_pixmap.isNull():
-                painter.save() 
-                
-                is_text = self.settings.get("content_type") == "text"
-                painter.setOpacity(self.settings.get("opacity", 100) / 100.0)
+                painter.save() # <--- Simpan State
+                try:           # <--- TAMBAHKAN BLOK TRY DISINI
+                    is_text = self.settings.get("content_type") == "text"
+                    opacity = self.settings.get("opacity", 100) / 100.0
+                    painter.setOpacity(opacity)
 
-                if is_text:
-                    painter.drawPixmap(self.rect().toRect(), self.current_pixmap)
-                else:
-                    scale = self.settings.get("scale", 100) / 100.0
-                    content_rot = self.settings.get("rot", 0)
-                    
-                    # Feather Settings
-                    f_l = self.settings.get("f_l", 0); f_r = self.settings.get("f_r", 0)
-                    f_t = self.settings.get("f_t", 0); f_b = self.settings.get("f_b", 0)
-                    
-                    # Crop Settings (Source)
-                    sf_l = self.settings.get("sf_l", 0); sf_r = self.settings.get("sf_r", 0)
-                    orig_w = self.current_pixmap.width(); orig_h = self.current_pixmap.height()
-                    src_w = max(1, orig_w - sf_l - sf_r); src_h = orig_h
+                    if is_text:
+                        painter.drawPixmap(self.rect().toRect(), self.current_pixmap)
+                    else:
+                        # --- LOGIKA MEDIA ---
+                        # (Ambil variable scale, rot, sf_l, f_l, dll seperti sebelumnya...)
+                        scale = self.settings.get("scale", 100) / 100.0
+                        content_rot = self.settings.get("rot", 0)
+                        
+                        sf_l = self.settings.get("sf_l", 0)
+                        sf_r = self.settings.get("sf_r", 0)
+                        
+                        f_l = self.settings.get("f_l", 0)
+                        f_r = self.settings.get("f_r", 0)
+                        f_t = self.settings.get("f_t", 0)
+                        f_b = self.settings.get("f_b", 0)
+                        
+                        orig_w = self.current_pixmap.width()
+                        orig_h = self.current_pixmap.height()
+                        
+                        src_x = sf_l
+                        src_y = 0
+                        src_w = max(1, orig_w - sf_l - sf_r)
+                        src_h = orig_h
+                        
+                        # Transformasi
+                        painter.translate(self.rect().center())
+                        painter.rotate(content_rot)
+                        painter.scale(scale, scale)
+                        painter.translate(-src_w / 2, -src_h / 2)
 
-                    # --- LOGIKA STRETCH KE FRAME ---
-                    target_w = self.rect().width()
-                    target_h = self.rect().height()
+                        # --- LOGIKA FEATHER ---
+                        has_feather = (f_l > 0 or f_r > 0 or f_t > 0 or f_b > 0)
 
-                    # Transformasi
-                    painter.translate(self.rect().center())
-                    painter.rotate(content_rot)
-                    painter.scale(scale, scale)
-                    painter.translate(-target_w/2, -target_h/2) # Geser origin ke pojok kiri atas TARGET
-                    
-                    # Gambar: Pakai 3 Argumen (Target, Pixmap, Source) agar STRETCH
-                    target_rect = QRectF(0, 0, target_w, target_h)
-                    source_rect = QRectF(sf_l, 0, src_w, src_h)
-                    
-                    painter.drawPixmap(target_rect, self.current_pixmap, source_rect)
-                    
-                    # Feather Effect (Digambar di atasnya)
-                    if f_l > 0 or f_r > 0 or f_t > 0 or f_b > 0:
-                        painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)
-                        if f_l > 0:
-                            grad = QLinearGradient(0, 0, f_l, 0)
-                            grad.setColorAt(0, QColor(0,0,0,255)); grad.setColorAt(1, QColor(0,0,0,0))
-                            painter.fillRect(0, 0, f_l, target_h, grad)
-                        if f_r > 0:
-                            grad = QLinearGradient(target_w - f_r, 0, target_w, 0)
-                            grad.setColorAt(0, QColor(0,0,0,0)); grad.setColorAt(1, QColor(0,0,0,255))
-                            painter.fillRect(target_w - f_r, 0, f_r, target_h, grad)
-                        if f_t > 0:
-                            grad = QLinearGradient(0, 0, 0, f_t)
-                            grad.setColorAt(0, QColor(0,0,0,255)); grad.setColorAt(1, QColor(0,0,0,0))
-                            painter.fillRect(0, 0, target_w, f_t, grad)
-                        if f_b > 0:
-                            grad = QLinearGradient(0, target_h - f_b, 0, target_h)
-                            grad.setColorAt(0, QColor(0,0,0,0)); grad.setColorAt(1, QColor(0,0,0,255))
-                            painter.fillRect(0, target_h - f_b, target_w, f_b, grad)
+                        if not has_feather:
+                            painter.drawPixmap(0, 0, self.current_pixmap, src_x, src_y, src_w, src_h)
+                        else:
+                            # Render ke Layer Sementara (Temp Pixmap)
+                            temp_pm = QPixmap(src_w, src_h)
+                            temp_pm.fill(Qt.transparent)
                             
-                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                            p_temp = QPainter(temp_pm)
+                            try: # Try-Finally untuk painter sementara
+                                # 1. Gambar Video Asli ke Temp
+                                p_temp.drawPixmap(0, 0, self.current_pixmap, src_x, src_y, src_w, src_h)
+                                
+                                # 2. Hapus pinggiran (Feather) pakai DestinationOut
+                                p_temp.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+                                
+                                # -- Kiri --
+                                if f_l > 0:
+                                    grad = QLinearGradient(0, 0, f_l, 0)
+                                    grad.setColorAt(0, QColor(0, 0, 0, 255)) 
+                                    grad.setColorAt(1, QColor(0, 0, 0, 0))
+                                    p_temp.fillRect(0, 0, f_l, src_h, grad)
+                                
+                                # -- Kanan --
+                                if f_r > 0:
+                                    grad = QLinearGradient(src_w - f_r, 0, src_w, 0)
+                                    grad.setColorAt(0, QColor(0, 0, 0, 0))
+                                    grad.setColorAt(1, QColor(0, 0, 0, 255))
+                                    p_temp.fillRect(src_w - f_r, 0, f_r, src_h, grad)
+                                
+                                # -- Atas --
+                                if f_t > 0:
+                                    grad = QLinearGradient(0, 0, 0, f_t)
+                                    grad.setColorAt(0, QColor(0, 0, 0, 255))
+                                    grad.setColorAt(1, QColor(0, 0, 0, 0))
+                                    p_temp.fillRect(0, 0, src_w, f_t, grad)
+                                
+                                # -- Bawah --
+                                if f_b > 0:
+                                    grad = QLinearGradient(0, src_h - f_b, 0, src_h)
+                                    grad.setColorAt(0, QColor(0, 0, 0, 0))
+                                    grad.setColorAt(1, QColor(0, 0, 0, 255))
+                                    p_temp.fillRect(0, src_h - f_b, src_w, f_b, grad)
+                                    
+                            finally:
+                                p_temp.end() # Wajib diakhiri
+                            
+                            # 3. Gambar hasil feather ke Main Painter
+                            painter.drawPixmap(0, 0, temp_pm)
 
-                painter.restore()
-            
+                finally:           # <--- TAMBAHKAN BLOK FINALLY DISINI
+                    painter.restore() # <--- Pastikan Restore dijalankan apapun yg terjadi
+
             painter.setClipping(False)
-
+            
         # 3. UI Helper (Selection, Handles, dll)
         if self.is_drop_target:
             pen = QPen(QColor("#ff9f43"), 4); pen.setJoinStyle(Qt.MiterJoin)
