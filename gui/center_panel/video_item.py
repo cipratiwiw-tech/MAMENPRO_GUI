@@ -210,13 +210,20 @@ class VideoItem(QGraphicsRectItem):
         self.file_path = path
         self.settings["content_type"] = "media"
         ext = os.path.splitext(path)[1].lower()
+        
+        # 1. Cek Tipe File
         if ext in ['.jpg', '.png', '.jpeg', '.webp', '.bmp']:
+            # IMAGE: Default 5 Detik (Bisa diubah user nanti)
             self.current_pixmap = QPixmap(path)
+            self.source_duration = 5.0 
         else:
+            # VIDEO: Load dan ambil durasi asli
             self._load_as_video(path)
             
-        # [BARU] Otomatis set durasi layer sesuai konten saat drop
-        self.set_time_range(self.start_time, self.source_duration)
+        # 2. [FIX UTAMA] Set durasi layer sesuai file asli
+        # Jika source_duration 0 (gagal), fallback ke 5.0
+        final_dur = self.source_duration if self.source_duration > 0 else 5.0
+        self.set_time_range(self.start_time, final_dur)
           
         self.update()
 
@@ -273,10 +280,14 @@ class VideoItem(QGraphicsRectItem):
         if PyAVClip:
             try:
                 self.clip = PyAVClip(path)
-                self.duration_s = getattr(self.clip, 'duration', 0.0)
+                # [FIX BUG] Gunakan variable yg konsisten (source_duration)
+                # Sebelumnya pakai duration_s yg tidak dibaca set_content
+                self.source_duration = getattr(self.clip, 'duration', 0.0) 
                 self.seek_to(0)
+                print(f"[VIDEO LOAD] Duration detected: {self.source_duration}s")
             except Exception as e:
                 print(f"Error load video: {e}")
+                self.source_duration = 0.0
 
     def seek_to(self, t):
         # [MODIFIKASI] Cek batas durasi sumber (Looping atau Stop)

@@ -136,7 +136,6 @@ class EditorController:
         self.layer_panel.set_delete_enabled(not item.settings.get("lock"))
 
     def on_canvas_selection_update_ui(self):
-        # [FIX] Tambahkan Try-Except untuk menangani 'Internal C++ Object Deleted'
         try:
             if not self.preview or not self.preview.scene: return
             
@@ -170,7 +169,7 @@ class EditorController:
             if hasattr(self.layer_panel, 'set_content_button_enabled'):
                 self.layer_panel.set_content_button_enabled(enable_content_buttons)
         except RuntimeError:
-            pass # Ignore C++ deleted error on exit
+            pass
 
     def on_create_visual_item(self, frame_code, shape="portrait"):
         self.layer_panel.add_layer_item_custom(f"FRAME {frame_code}")
@@ -199,7 +198,6 @@ class EditorController:
         self.setting.set_values(item.settings)
         self.recalculate_global_duration()
 
-    # --- [RENDER LOGIC YANG DIPERBAIKI TOTAL] ---
     def on_render_clicked(self):
         self.recalculate_global_duration()
         current_duration = max(0.1, float(self.engine.duration))
@@ -207,7 +205,6 @@ class EditorController:
         output_path, _ = QFileDialog.getSaveFileName(self.view, "Simpan Video", "render_output.mp4", "Video Files (*.mp4)")
         if not output_path: return
 
-        # Resolusi Canvas
         scene_rect = self.preview.scene.sceneRect()
         canvas_w, canvas_h = int(scene_rect.width()), int(scene_rect.height())
         
@@ -217,18 +214,15 @@ class EditorController:
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
-            # Skip jika item hidden
             if item.opacity() == 0 or not item.isVisible(): continue
             
-            # --- 1. TENTUKAN TIPE KONTEN & PATH ---
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
             
             render_path = None
-            is_static_image = False # Default False, akan dicek nanti
+            is_static_image = False 
 
             if is_text:
-                # Render teks ke gambar temp
                 if not item.current_pixmap: item.refresh_text_render()
                 if item.current_pixmap:
                     fd, temp_path = tempfile.mkstemp(suffix=".png")
@@ -236,28 +230,24 @@ class EditorController:
                     item.current_pixmap.save(temp_path, "PNG")
                     self.temp_files.append(temp_path)
                     render_path = temp_path
-                    is_static_image = True # Teks selalu jadi gambar
+                    is_static_image = True 
             else:
-                # Media Biasa / BG
                 render_path = item.file_path
             
-            # [FIX CRITICAL] Skip jika path kosong (mencegah error os.path)
+            # [FIX] Cek Path Valid
             if not render_path:
-                print(f"[SKIP RENDER] Item {item} tidak memiliki file path.")
+                print(f"[SKIP RENDER] Item {item} path kosong.")
                 continue
 
-            # [FIX CRITICAL] Deteksi File Extension dengan Benar
-            # Jangan anggap BG selalu Image. BG bisa video.
+            # [FIX] Deteksi Tipe File
             if not is_text:
                 ext = os.path.splitext(render_path)[1].lower()
                 if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
                     is_static_image = True
                 else:
-                    is_static_image = False # Video File
+                    is_static_image = False 
 
-            # --- 2. HITUNG POSISI & UKURAN ---
             if is_bg:
-                # Logika Background Cover
                 if not item.current_pixmap: continue
                 pix_w = item.current_pixmap.width()
                 pix_h = item.current_pixmap.height()
@@ -277,18 +267,15 @@ class EditorController:
                 
                 px = int((canvas_w / 2) - (vw / 2) + off_x)
                 py = int((canvas_h / 2) - (vh / 2) + off_y)
-
             else:
-                # Logika Item Biasa
                 vw = int(item.rect().width())
                 vh = int(item.rect().height())
                 px = int(item.x())
                 py = int(item.y())
 
-            # Masukkan ke list render
             items_data.append({
                 'path': render_path, 
-                'is_image': is_static_image, # [PENTING] Kirim flag tipe file yang benar
+                'is_image': is_static_image,
                 'x': px, 'y': py, 
                 'visual_w': vw, 'visual_h': vh,
                 'rot': int(item.rotation()), 
@@ -298,7 +285,6 @@ class EditorController:
                 'end_time': item.end_time
             })
 
-        # Jalankan Render
         self.layer_panel.render_tab.btn_render.setEnabled(False)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
         
@@ -310,7 +296,6 @@ class EditorController:
         self.layer_panel.render_tab.btn_render.setEnabled(True)
         self.layer_panel.render_tab.btn_render.setText("🎬 MULAI RENDER")
         
-        # Cleanup temp
         for f in self.temp_files:
             try: os.remove(f)
             except: pass
