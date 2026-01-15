@@ -31,22 +31,23 @@ class RenderWorker(QThread):
         audio_map_indices = [] 
         temp_files = [] 
         
-        # Base Canvas
+        # 1. Base Canvas (Dasar Hitam)
         filter_complex.append(f"color=c=black:s={self.canvas_w}x{self.canvas_h}:d={self.duration}[base]")
         last_vid_node = "[base]"
         
         current_input_idx = 0
         
         try:
+            # Urutkan berdasarkan Z-Value agar urutan tumpukan benar
             sorted_items = sorted(self.items, key=lambda x: x.get('z_value', 0))
 
             for idx, item in enumerate(sorted_items):
                 if self.is_stopped: break
 
-                is_bg = item.get('is_bg', False)
                 is_text = item.get('is_text', False)
-                file_path = item.get('path', "")
+                file_path = item.get('path') # Bisa berupa None untuk Teks
                 
+                # --- HANDLING INPUT ---
                 if is_text:
                     temp_img = f"temp_render_text_{idx}.png"
                     if item.get('text_pixmap'):
@@ -54,99 +55,129 @@ class RenderWorker(QThread):
                         temp_files.append(temp_img)
                         inputs.extend(['-loop', '1', '-t', str(self.duration), '-i', temp_img])
                     else:
+                        # Fallback jika teks kosong
                         inputs.extend(['-f', 'lavfi', '-i', f"color=c=black@0:s=100x100:d={self.duration}"])
                 else:
+                    # FIX NoneType Error: Pastikan path ada sebelum diproses os.path
+                    if not file_path:
+                        continue
+                        
                     inputs.extend(['-i', file_path])
+                    
+                    # Cek Ekstensi untuk menentukan apakah file mungkin punya audio
                     ext = os.path.splitext(file_path)[1].lower()
-                    if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif']:
+                    video_exts = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
+                    # Jangan masukkan gambar ke daftar audio map untuk menghindari error -22
+                    if ext in video_exts:
+                        # Catatan: Ini masih berasumsi video punya audio. 
+                        # Jika video 'bisu' menyebabkan error, hapus baris di bawah.
                         audio_map_indices.append(current_input_idx)
 
                 curr_in_node = f"[{current_input_idx}:v]"
                 current_input_idx += 1
 
+                # --- PARAMETER TRANSFORMASI ---
                 vis_w = item['visual_w']; vis_h = item['visual_h']
                 pos_x = item['x']; pos_y = item['y']
                 rot = item.get('rot', 0); opacity = item.get('opacity', 100)
-                
-                # Filter Effects
                 blur_val = item.get('blur', 0)
                 vig_val = item.get('vig', 0)
 
                 scaled_node = f"[s{idx}]"
                 out_node = f"[layer{idx}]"
 
-                # Chain filter
-                filters = [f"scale={vis_w}:{vis_h}:flags=lanczos"]
+                # --- FILTER CHAIN (MENYAMAKAN PREVIEW) ---
+                filters = []
                 
-                # Blur (gblur sigma) - estimasi: 0-50 slider -> 0-50 sigma
+                # Pastikan dimensi genap untuk libx264
+                rw = vis_w if vis_w % 2 == 0 else vis_w + 1
+                rh = vis_h if vis_h % 2 == 0 else vis_h + 1
+                filters.append(f"scale={rw}:{rh}:flags=lanczos")
+                
                 if blur_val > 0:
-                    filters.append(f"gblur=sigma={blur_val}")
+                    filters.append(f"gblur=sigma={blur_val * 0.5}") # Normalisasi sigma
                 
-                # Vignette (PI/20 * val)
                 if vig_val > 0:
-                    # Vignette filter syntax: vignette=angle=PI/4
-                    # Kita map 0-100 ke intensitas
-                    rad = (vig_val / 100.0) * 1.5 # max sekitar 1.5 rad
+                    rad = (vig_val / 100.0) * 0.5
                     filters.append(f"vignette=angle={rad}")
 
-                # Rotate
                 if rot != 0:
+                    # ow/oh rotw/roth agar pivot di tengah (mencegah crop)
                     filters.append(f"rotate={rot}*PI/180:ow=rotw(iw):oh=roth(ih):c=none")
                 
-                # Opacity
-                if opacity < 100:
-                    filters.append(f"format=rgba,colorchannelmixer=aa={opacity/100.0}")
+                # Wajib RGBA agar area kosong hasil rotasi/transparansi tidak hitam
+                filters.append(f"format=rgba,colorchannelmixer=aa={opacity/100.0}")
                 
-                filter_chain = ",".join(filters)
-                filter_complex.append(f"{curr_in_node}{filter_chain}{scaled_node}")
+                filter_complex.append(f"{curr_in_node}{','.join(filters)}{scaled_node}")
 
-                # Overlay
+                # --- OVERLAY (KOMPENSASI PIVOT CENTER) ---
                 start_t = item.get('start_time', 0)
                 end_t = item.get('end_time', self.duration)
+                
+                # Rumus agar posisi (X,Y) di render sama dengan titik tengah di Preview Qt
+                overlay_x = f"{pos_x}-(w-iw)/2"
+                overlay_y = f"{pos_y}-(h-ih)/2"
+                
                 overlay_cmd = (
-                    f"{last_vid_node}{scaled_node}overlay={pos_x}:{pos_y}:"
+                    f"{last_vid_node}{scaled_node}overlay={overlay_x}:{overlay_y}:"
                     f"enable='between(t,{start_t},{end_t})':format=auto{out_node}"
                 )
                 filter_complex.append(overlay_cmd)
                 last_vid_node = out_node
 
-            if self.is_stopped: self.sig_finished.emit(False, "Stopped by User"); return
+            if self.is_stopped: self.sig_finished.emit(False, "Render Dibatalkan."); return
 
+            # --- AUDIO TRACKS (MUSIK LUAR) ---
             for track in self.audio_tracks:
-                if os.path.exists(track):
+                if track and os.path.exists(track):
                     inputs.extend(['-i', track])
                     audio_map_indices.append(current_input_idx)
                     current_input_idx += 1
 
+            # --- MAPPING AUDIO ---
             audio_out_node = None
-            if len(audio_map_indices) > 0:
+            if audio_map_indices:
                 mix_inputs = "".join([f"[{i}:a]" for i in audio_map_indices])
+                # Gunakan amix hanya jika ada audio, filter amix butuh minimal 1 stream valid
                 filter_complex.append(f"{mix_inputs}amix=inputs={len(audio_map_indices)}:duration=longest[aout]")
                 audio_out_node = "[aout]"
             
+            # --- FINAL COMMAND ---
             full_filter_str = ";".join(filter_complex)
-            cmd = ['ffmpeg', '-y']; cmd.extend(inputs); cmd.extend(['-filter_complex', full_filter_str])
+            cmd = ['ffmpeg', '-y']
+            cmd.extend(inputs)
+            cmd.extend(['-filter_complex', full_filter_str])
             cmd.extend(['-map', last_vid_node])
-            if audio_out_node: cmd.extend(['-map', audio_out_node]); cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
             
-            cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', self.output_path])
+            if audio_out_node: 
+                cmd.extend(['-map', audio_out_node])
+                cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
+            
+            cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-crf', '18', self.output_path])
 
             self.sig_progress.emit("⚙️ Menjalankan FFmpeg...")
-            print(" ".join(cmd))
-
+            
             startupinfo = None
             if os.name == 'nt':
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, startupinfo=startupinfo, encoding='utf-8', errors='replace')
-            stdout, stderr = self.process.communicate()
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                                          universal_newlines=True, startupinfo=startupinfo, 
+                                          encoding='utf-8', errors='replace')
             
-            if self.is_stopped: self.sig_finished.emit(False, "Render Stopped.")
-            elif self.process.returncode == 0: self.sig_finished.emit(True, f"Render Selesai!\nSaved to: {self.output_path}")
-            else: self.sig_finished.emit(False, f"FFmpeg Error:\n{stderr[-800:] if stderr else 'Unknown'}")
+            stdout, _ = self.process.communicate()
+            
+            if self.is_stopped: 
+                self.sig_finished.emit(False, "Render Berhenti.")
+            elif self.process.returncode == 0: 
+                self.sig_finished.emit(True, f"Render Selesai!\nSaved to: {self.output_path}")
+            else: 
+                # Tangkap log error terakhir jika gagal
+                self.sig_finished.emit(False, f"FFmpeg Error:\n{stdout[-500:]}")
 
-        except Exception as e: self.sig_finished.emit(False, str(e))
+        except Exception as e: 
+            self.sig_finished.emit(False, f"Terjadi Kesalahan: {str(e)}")
         finally:
             for tmp in temp_files:
                 if os.path.exists(tmp):

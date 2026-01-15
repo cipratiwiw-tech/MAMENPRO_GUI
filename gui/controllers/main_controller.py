@@ -163,36 +163,39 @@ class EditorController:
         items_data = []
         total_duration = self.engine.duration if self.engine.duration > 0 else 5.0
         
+        # Ambil ukuran scene yang sebenarnya digunakan sebagai referensi preview
+        scene_rect = self.preview.scene.sceneRect()
+        sw, sh = scene_rect.width(), scene_rect.height()
+
         for item in [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]:
             is_bg = isinstance(item, BackgroundItem)
             is_text = item.settings.get("content_type") == "text"
-            if not is_text and not item.file_path: continue
-
+            
+            # Konsistensi: Gunakan koordinat scene murni
             if is_bg:
-                orig_w = item.current_pixmap.width() if item.current_pixmap else canvas_w
-                orig_h = item.current_pixmap.height() if item.current_pixmap else canvas_h
-                scale = item.settings.get('scale', 100) / 100.0
-                vw, vh = int(orig_w * scale), int(orig_h * scale)
-                
-                # Center to Top-Left Conversion for FFmpeg
-                px = int(((canvas_w / 2) + item.settings.get('x', 0)) - (vw / 2))
-                py = int(((canvas_h / 2) + item.settings.get('y', 0)) - (vh / 2))
-                rot, opac = 0, 100
+                # Pastikan background dirender sesuai posisinya di preview
+                vw, vh = int(item.current_pixmap.width() * (item.settings['scale']/100)), \
+                        int(item.current_pixmap.height() * (item.settings['scale']/100))
+                # Hitung offset agar pas di tengah seperti di BackgroundItem.paint
+                px = int((sw/2 + item.settings['x']) - (vw/2))
+                py = int((sh/2 + item.settings['y']) - (vh/2))
             else:
+                # Untuk item biasa, ambil rect dan pos langsung
                 vw, vh = int(item.rect().width()), int(item.rect().height())
                 px, py = int(item.x()), int(item.y())
-                rot, opac = int(item.rotation()), item.settings.get('opacity', 100)
-
-            # Ensure even dimensions for FFMPEG
-            vw += vw % 2; vh += vh % 2
 
             items_data.append({
-                'path': item.file_path, 'is_bg': is_bg, 'is_text': is_text,
+                'path': item.file_path, 
+                'is_bg': is_bg, 
+                'is_text': is_text,
                 'text_pixmap': item.current_pixmap if is_text else None,
-                'x': px, 'y': py, 'visual_w': vw, 'visual_h': vh,
-                'rot': rot, 'opacity': opac, 'z_value': item.zValue(),
-                'start_time': 0, 'end_time': total_duration,
-                'blur': item.settings.get('blur', 0), 'vig': item.settings.get('vig', 0)
+                'x': px, 'y': py, 
+                'visual_w': vw, 'visual_h': vh,
+                'rot': int(item.rotation()), # Pastikan rotasi ikut terkirim
+                'opacity': item.settings.get('opacity', 100),
+                'z_value': item.zValue(),
+                'blur': item.settings.get('blur', 0),
+                'vig': item.settings.get('vig', 0)
             })
 
         if not items_data: return
