@@ -564,6 +564,12 @@ class EditorController:
         if self.bg_item: self.preview.scene.removeItem(self.bg_item)
         
         self.bg_item = BackgroundItem(data['path'], self.preview.scene.sceneRect())
+        
+        # --- [PERBAIKAN DIMULAI] ---
+        # Wajib hubungkan sinyal agar saat didrag, angka di panel ikut berubah
+        self.connect_bg_signals(self.bg_item) 
+        # --- [PERBAIKAN SELESAI] ---
+
         self.bg_item.seek_to(0)
         self.bg_item.update_bg_settings({'x': 0, 'y': 0, 'scale': 100, 'fit': 'cover', 'blur': 0, 'vig': 0})
         

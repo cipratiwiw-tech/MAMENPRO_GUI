@@ -197,7 +197,7 @@ class LayerPanel(QWidget):
         # Properti Vignette Baru (DoubleSpinBox untuk presisi float)
         self.spn_vig_strength = self._create_double_spinbox("Strength (0.0-1.0)", 0.0, 1.0, 0.0)
         self.spn_vig_radius = self._create_double_spinbox("Radius (0.2-1.2)", 0.2, 1.2, 0.8)
-        self.spn_vig_angle = self._create_double_spinbox("Angle (0-360)", 0.0, 360.0, 0.0, "°", step=1.0)
+        self.spn_vig_angle = self._create_double_spinbox("Angle (0-360)", 0.0, 360.0, 0.0, "°", step=10.0)
 
         # Tata Letak Grid (Row 0-3)
         bg_grid.addWidget(self._create_label("X:"), 0, 0); bg_grid.addWidget(self.spin_bg_x, 0, 1)

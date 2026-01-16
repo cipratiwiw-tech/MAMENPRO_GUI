@@ -39,17 +39,20 @@ class VideoItem(QGraphicsRectItem):
         self.name = name
         self.file_path = file_path
         
-        # --- INISIALISASI VARIABEL STATE ---
-        self.is_in_time_range = True
+        # --- INISIALISASI VARIABEL STATE (PENTING) ---
         self.is_resizing = False
         self.current_handle = self.Handles["NONE"]
         self.resize_start_pos = None
         self.resize_start_rect = None
         self.is_drop_target = False
+        self.is_in_time_range = True
+        
+        # Safety fallback (jika ada kode nyasar memanggil ini)
+        self._is_dragging = False 
         
         self.start_time = 0.0
         self.end_time = 5.0
-        self.source_duration = 0.0 # Default value
+        self.source_duration = 0.0
         
         self.settings = {
             "x": 0, "y": 0, 
@@ -353,62 +356,87 @@ class VideoItem(QGraphicsRectItem):
         self.set_time_range(self.start_time, 5.0)
         self.refresh_text_render()
 
+
     def refresh_text_render(self):
+        """Me-render teks visual caption ke dalam self.current_pixmap"""
         s = self.settings
         w, h = max(1, int(self.rect().width())), max(1, int(self.rect().height()))
+        
         canvas = QImage(w, h, QImage.Format_ARGB32)
         canvas.fill(Qt.transparent)
         
         p = QPainter(canvas)
         p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         
-        # 1. Font Setup
-        font = QFont(s.get("font", "Arial"), s.get("font_size", 40))
-        if s.get("font_weight") == "Bold": font.setBold(True)
-        if s.get("font_weight") == "Light": font.setWeight(QFont.Light)
-        font.setLetterSpacing(QFont.AbsoluteSpacing, s.get("letter_spacing", 0))
-        p.setFont(font)
-
-        # 2. Background Box (Template 5 & 6)
-        if s.get("bg_on"):
+        # 1. Background Box
+        if s.get("bg_on", False):
             bg_col = QColor(s.get("bg_color", "#000000"))
             bg_col.setAlpha(s.get("bg_opacity", 255))
             p.setBrush(bg_col)
             p.setPen(Qt.NoPen)
             radius = s.get("bg_rounded", 0)
             p.drawRoundedRect(0, 0, w, h, radius, radius)
+            
+        # 2. Font & Text Setup
+        font_family = s.get("font", "Arial")
+        # Jika font datang sebagai string "PySide6.QtGui.QFont(...)", ambil family-nya saja jika perlu
+        # tapi biasanya combobox mengembalikan string nama font.
+        
+        font = QFont(font_family, s.get("font_size", 40))
+        
+        # Handle Font Weight/Style dari Template
+        weight = s.get("font_weight", "Normal")
+        if weight == "Bold": font.setBold(True)
+        elif weight == "Black": font.setWeight(QFont.Black)
+        elif weight == "Light": font.setWeight(QFont.Light)
+        
+        font.setLetterSpacing(QFont.AbsoluteSpacing, s.get("letter_spacing", 0))
+        p.setFont(font)
+        
+        txt = s.get("text_content", "SAMPLE CAPTION")
 
-        # 3. Shadow (Template 3 & 10)
-        txt = s.get("text_content", "PREVIEW TEXT")
-        if s.get("shadow_on"):
+        # 3. Shadow Effect
+        if s.get("shadow_on", False):
             p.setPen(QColor(0, 0, 0, 150))
-            p.drawText(QRectF(3, 3, w, h), Qt.AlignCenter, txt) # Manual shadow offset
+            # Offset shadow sedikit
+            p.drawText(QRectF(4, 4, w, h), Qt.AlignCenter, txt)
 
-        # 4. Main Text / Stroke
-        if s.get("stroke_on"):
+        # 4. Main Text rendering (Stroke / Fill)
+        if s.get("stroke_on", False):
             path = QPainterPath()
             fm = QFontMetrics(font)
+            # Hitung posisi tengah manual untuk path
             tw = fm.horizontalAdvance(txt)
             th = fm.capHeight()
-            path.addText((w - tw)/2, (h + th)/2, font, txt)
+            x_pos = (w - tw) / 2
+            y_pos = (h + th) / 2
             
-            p.setPen(QPen(QColor(s.get("stroke_color", "black")), s.get("stroke_width", 2)))
+            path.addText(x_pos, y_pos, font, txt)
+            
+            # Gambar Stroke
+            stroke_w = s.get("stroke_width", 2)
+            p.setPen(QPen(QColor(s.get("stroke_color", "black")), stroke_w))
             p.drawPath(path)
-            # Highlight logic (Template 4)
-            fill_color = QColor(s.get("highlight_c", s.get("text_color", "white"))) if s.get("karaoke_on") else QColor(s.get("text_color", "white"))
-            p.fillPath(path, fill_color)
+            
+            # Gambar Fill (Highlight warna jika karaoke)
+            fill_col = QColor(s.get("highlight_c", s.get("text_color", "white")))
+            p.fillPath(path, fill_col)
         else:
+            # Render teks biasa
             p.setPen(QColor(s.get("text_color", "#ffffff")))
             p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, txt)
         
-        # 5. Bounding Guide (Hanya saat editor aktif)
+        # 5. Visual Guide (Dotted Line) khusus Mode Caption Preview
         if s.get("content_type") == "caption_preview":
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(QColor("#61afef"), 1, Qt.DashLine))
             p.drawRect(0, 0, w-1, h-1)
-
+        
         p.end()
-        self.setPixmap(QPixmap.fromImage(canvas))
+        
+        # FIX: Assign ke self.current_pixmap agar method paint() bisa menggambarnya
+        self.current_pixmap = QPixmap.fromImage(canvas)
+        self.update() # Memicu repaint ulang di layar
 
     # --- VIDEO ENGINE BRIDGE ---
     def _load_as_video(self, path):
@@ -509,6 +537,7 @@ class BackgroundItem(VideoItem):
         # Gunakan inisialisasi asli agar struktur Container & ZValue tetap benar
         super().__init__("BG", path, None)
         self.setZValue(-500)
+        self._is_dragging = False # Variable khusus class ini
         
         # --- INIT SIGNAL (DARI PATCH) ---
         self.signals = ItemSignals()

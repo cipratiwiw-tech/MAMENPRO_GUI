@@ -385,19 +385,29 @@ class MediaTab(QScrollArea):
     def set_values(self, data):
         self.blockSignals(True)
         is_bg = data.get("is_bg", False)
+        
+        # 1. Atur Group Video (sudah ada sebelumnya)
         self.group_video.setEnabled(not is_bg)
         self.group_video.setTitle("VIDEO ATTRIBUTES (DISABLED FOR BG)" if is_bg else "CLIP ATTRIBUTES")
         
+        # --- [PERBAIKAN DIMULAI] ---
+        # 2. Atur Group Frame (Matikan total jika ini Background)
+        self.group_frame.setEnabled(not is_bg)
+        self.group_frame.setTitle("FRAME (DISABLED FOR BG)" if is_bg else "FRAME / CONTAINER")
+
         if "start_time" in data: self.spn_start.setValue(float(data["start_time"]))
         if "end_time" in data and data["end_time"] is not None: self.spn_end.setValue(float(data["end_time"]))
         else: s = self.spn_start.value(); self.spn_end.setValue(s + 5.0)
             
-        if "x" in data: self.spn_x.setValue(data["x"])
-        if "y" in data: self.spn_y.setValue(data["y"])
-        if "frame_w" in data: self.spn_frame_w.setValue(data["frame_w"])
-        if "frame_h" in data: self.spn_frame_h.setValue(data["frame_h"])
-        if "frame_rot" in data: self.spn_frame_rot.setValue(data["frame_rot"])
-        if "lock" in data: self.chk_lock_frame.setChecked(data["lock"])
+        # HANYA update nilai Frame jika BUKAN Background
+        if not is_bg:
+            if "x" in data: self.spn_x.setValue(data["x"])
+            if "y" in data: self.spn_y.setValue(data["y"])
+            if "frame_w" in data: self.spn_frame_w.setValue(data["frame_w"])
+            if "frame_h" in data: self.spn_frame_h.setValue(data["frame_h"])
+            if "frame_rot" in data: self.spn_frame_rot.setValue(data["frame_rot"])
+            if "lock" in data: self.chk_lock_frame.setChecked(data["lock"])
+        # --- [PERBAIKAN SELESAI] ---
 
         if "scale" in data: self.spn_scale.setValue(data["scale"])
         if "rot" in data: self.spn_rot.setValue(data["rot"])
