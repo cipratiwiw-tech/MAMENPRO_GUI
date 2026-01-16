@@ -17,8 +17,8 @@ class RenderWorker(QThread):
         self.audio_tracks = audio_tracks if audio_tracks is not None else []
         self.is_stopped = False
         self.process = None # [BARU] Simpan instance subprocess.
-        self.caption_data = caption_data
-        self.subtitle_file = subtitle_file # [BARU]
+        # Simpan path file subtitle .ass
+        self.subtitle_file = subtitle_file
         
     def stop(self):
         """Dipanggil dari Controller saat tombol Stop diklik"""
@@ -144,23 +144,21 @@ class RenderWorker(QThread):
             last_out_label = node_overlay
 
         # --- [NEW] SUBTITLE PROCESSING ---
-        # Logika ini dipasang setelah loop visual selesai, agar subtitle ada di paling atas (top layer)
-        # Menggunakan getattr untuk safety jika self.subtitle_file belum di-init
-        sub_file = getattr(self, 'subtitle_file', None)
-        
-        if sub_file and os.path.exists(sub_file):
+        # Menggunakan subtitle_file yang dikirim dari controller
+        if self.subtitle_file and os.path.exists(self.subtitle_file):
             # Escape path untuk Windows (FFmpeg filter butuh escape khusus pada backslash dan colon)
             # Contoh: C:\Path -> C\:/Path
-            sub_path_escaped = sub_file.replace("\\", "/").replace(":", "\\:")
+            sub_path_escaped = self.subtitle_file.replace("\\", "/").replace(":", "\\:")
             
             next_label = "[v_subbed]"
             
             # Pasang filter subtitles ke chain terakhir (last_out_label)
+            # force_style='Fontname=Arial,PrimaryColour=&H00FFFFFF' bisa ditambahkan jika ingin override .ass
             filter_parts.append(f"{last_out_label}subtitles='{sub_path_escaped}'{next_label}")
             
             # Update output label terakhir menjadi video yang sudah ada subtitlenya
             last_out_label = next_label
-            print(f"[RENDER] Subtitle burned: {sub_file}")
+            print(f"[RENDER] Subtitle burned: {self.subtitle_file}")
 
         # --- AUDIO ---
         audio_cmds = []
@@ -197,3 +195,40 @@ class RenderWorker(QThread):
         cmd.append(self.output_path)
         
         self._run_process(cmd)
+
+    def _run_process(self, cmd):
+        # Helper untuk menjalankan subprocess agar lebih rapi
+        print(f"[CMD] {' '.join(cmd)}")
+        try:
+            # Gunakan startupinfo untuk menyembunyikan console window di Windows
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            self.process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                startupinfo=startupinfo,
+                encoding='utf-8', errors='ignore' # Tambahan encoding agar aman
+            )
+            
+            # Baca output progress (opsional, bisa dikembangkan untuk progress bar)
+            while True:
+                line = self.process.stderr.readline()
+                if not line and self.process.poll() is not None:
+                    break
+                if line:
+                    # Print log ffmpeg (bisa difilter jika terlalu berisik)
+                    # print(line.strip())
+                    pass
+            
+            if self.process.returncode == 0:
+                self.sig_finished.emit(True, "Render Selesai!")
+            else:
+                self.sig_finished.emit(False, "Render Gagal (FFmpeg Error)")
+                
+        except Exception as e:
+            self.sig_finished.emit(False, f"Error System: {str(e)}")
