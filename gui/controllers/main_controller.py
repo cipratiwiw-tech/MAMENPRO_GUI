@@ -497,6 +497,12 @@ class EditorController:
                 'f_r': item.settings.get('f_r', 0),
                 'f_t': item.settings.get('f_t', 0),
                 'f_b': item.settings.get('f_b', 0),
+                
+                # --- [TAMBAHAN BARU] ---
+                # Kirim data Blur & Vignette ke Render Engine
+                'blur': item.settings.get('blur', 0),
+                'vig_strength': item.settings.get('vig_strength', 0.0),
+                'vig_angle': item.settings.get('vig_angle', 0.0)
             })
 
         # Scaling untuk Output Resolution

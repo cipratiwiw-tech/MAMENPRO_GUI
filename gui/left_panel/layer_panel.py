@@ -223,9 +223,9 @@ class LayerPanel(QWidget):
         row_two = QHBoxLayout()
         row_two.setSpacing(2)
         
-        self.spn_vig_strength = self._create_double_spinbox("Str", 0.0, 1.0, 0.25)
-        self.spn_vig_radius = self._create_double_spinbox("Rad", 0.2, 1.2, 0.85)
-        self.spn_vig_angle = self._create_double_spinbox("Ang", -180.0, 180.0, 0.0, "°", step=10.0)
+        self.spn_vig_strength = self._create_double_spinbox("Str", 0.0, 1.0, 0.60)
+        self.spn_vig_radius = self._create_double_spinbox("Rad", 0.2, 1.2, 0.70)
+        self.spn_vig_angle = self._create_double_spinbox("Ang", -180.0, 180.0, -10.0, "°", step=10.0)
         self.spn_vig_angle.setWrapping(True)
 
         for w in [self.spn_vig_strength, self.spn_vig_radius, self.spn_vig_angle]: w.setFixedWidth(45)
@@ -350,9 +350,9 @@ class LayerPanel(QWidget):
         layout.addWidget(self.render_tab)
 
     def _reset_vignette_values(self):
-        self.spn_vig_strength.setValue(0.25)
-        self.spn_vig_radius.setValue(0.85) # Default radius
-        self.spn_vig_angle.setValue(0.0)
+        self.spn_vig_strength.setValue(0.60)
+        self.spn_vig_radius.setValue(0.70) # Default radius
+        self.spn_vig_angle.setValue(-10.0)
         
     # --- LOGIC HANDLERS ---
     def _emit_bg_change(self):

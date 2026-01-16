@@ -7,7 +7,8 @@ class RenderWorker(QThread):
     sig_progress = Signal(str)
     sig_finished = Signal(bool, str)
 
-    def __init__(self, items_data, output_path, duration, width=1080, height=1920, audio_tracks=None):
+    # [FIX] Tambahkan subtitle_file=None ke dalam parameter __init__
+    def __init__(self, items_data, output_path, duration, width=1080, height=1920, audio_tracks=None, subtitle_file=None):
         super().__init__()
         self.items = items_data
         self.output_path = output_path
@@ -16,9 +17,13 @@ class RenderWorker(QThread):
         self.canvas_h = height
         self.audio_tracks = audio_tracks if audio_tracks is not None else []
         self.is_stopped = False
-        self.process = None # [BARU] Simpan instance subprocess.
-        # Simpan path file subtitle .ass
-        self.subtitle_file = subtitle_file
+        self.process = None 
+        
+        # [FIX] Hapus baris self.caption_data = caption_data karena variabel caption_data tidak ada/tidak dikirim
+        # self.caption_data = caption_data 
+
+        # [FIX] Simpan parameter subtitle_file yang diterima dari Controller
+        self.subtitle_file = subtitle_file 
         
     def stop(self):
         """Dipanggil dari Controller saat tombol Stop diklik"""
@@ -130,6 +135,25 @@ class RenderWorker(QThread):
                 f"crop={vis_w}:{vis_h}{node_scaled}"
             )
             last_processed = node_scaled
+                        
+            # --- [BARU] 4.1 BLUR EFFECT ---
+            blur_val = int(item.get('blur', 0))
+            if blur_val > 0:
+                node_blurred = f"[blr{input_idx}]"
+                # Menggunakan boxblur karena cepat. lr=radius.
+                # Kita kali 2 agar efeknya lebih terasa mendekati preview Qt
+                filter_parts.append(f"{last_processed}boxblur=luma_radius={blur_val}:luma_power=1{node_blurred}")
+                last_processed = node_blurred
+
+            # --- [BARU] 4.2 VIGNETTE EFFECT ---
+            vig_str = float(item.get('vig_strength', 0.0))
+            if vig_str > 0.01:
+                node_vig = f"[vig{input_idx}]"
+                # FFmpeg vignette angle: PI/5 default.
+                # Kita mapping strength (0.0 - 1.0) ke angle vignette.
+                # angle=PI/2 * strength
+                filter_parts.append(f"{last_processed}vignette=angle=PI/2*{vig_str}{node_vig}")
+                last_processed = node_vig
 
             # 5. OPACITY
             if opacity < 1.0:
