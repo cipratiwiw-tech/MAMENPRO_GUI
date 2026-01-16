@@ -12,6 +12,8 @@ from engine.caption.caption_flow import apply_caption, get_transcript_data
 from gui.utils.bg_service import BackgroundService
 from engine.render_engine import RenderWorker
 from gui.right_panel.caption_tab import CaptionTab
+from gui.center_panel.caption_item import CaptionItem
+from engine.caption import word_adapter
 
 # [BARU] Import untuk generate subtitle ASS
 from engine.caption.ass_builder import make_ass_from_words
@@ -43,7 +45,7 @@ class EditorController:
         if hasattr(self.setting, 'caption_tab'):
             self.setting.caption_tab.sig_enable_toggled.connect(self.on_caption_enabled)
             self.setting.caption_tab.sig_style_changed.connect(self.on_caption_style_changed)
-            self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_transcript)
+            self.setting.caption_tab.sig_generate_caption.connect(self.on_generate_caption)
             
     # --- [BAGIAN CONFIG: SAVE & LOAD] ---
     def load_app_config(self):
@@ -295,66 +297,200 @@ class EditorController:
         if enabled:
             if not caption_item:
                 from gui.center_panel.video_item import VideoItem
-                caption_item = VideoItem("CAPTION_LAYER", shape="text")
+                caption_item = CaptionItem("CAPTION_LAYER")
+                
+                # Setup default settings
                 caption_item.settings.update({
-                    "content_type": "caption_preview",
-                    "text_content": "TRANSCRIPT HERE",
-                    "frame_w": 800, "frame_h": 120,
-                    "x": (1080 - 800) / 2, "y": 1920 - 300
+                    "text_content": "MAMEN CAPTION",
+                    "font": "Arial",
+                    "font_size": 42,
+                    "text_color": "#ffffff",
+                    "stroke_on": True,
+                    "stroke_width": 3,
+                    "stroke_color": "#000000",
+                    "bg_on": False
                 })
+                
                 scene.addItem(caption_item)
-                caption_item.setZValue(9999) # Selalu di depan
+                caption_item.setZValue(9999) # Selalu paling atas
+                
+                # Posisi awal (misal di bawah tengah)
+                scene_w = self.preview.scene.sceneRect().width()
+                caption_item.refresh_text_render() # Hitung ukuran dulu
+                
+                # Taruh di tengah bawah
+                item_w = caption_item.rect().width()
+                start_x = (scene_w - item_w) / 2
+                caption_item.setPos(start_x, 800) # Y=800 misal
+                caption_item.settings['x'] = start_x
                 
             caption_item.setVisible(True)
             caption_item.setSelected(True)
-            caption_item.refresh_text_render()
         else:
             if caption_item:
                 caption_item.setVisible(False)
-
+                
     # 2. LOGIKA SYNC STYLE (REALTIME)
     def on_caption_style_changed(self, data):
         caption_item = next((i for i in self.preview.scene.items() if getattr(i, 'name', '') == "CAPTION_LAYER"), None)
         
         if caption_item:
-            # Terapkan SEMUA properti dari data signal
+            # 1. Update Settings
             caption_item.settings.update(data)
-            # Refresh visual di canvas
+            
+            # 2. Refresh ukuran bounding box (Auto-Fit)
             caption_item.refresh_text_render()
+            
+            # 3. Terapkan Posisi (Alignment & Margin) jika ada di data preset
+            # Kita cek apakah data yang masuk mengandung instruksi alignment/margin
+            if "alignment" in data or "margin_v" in data:
+                self._apply_caption_alignment(caption_item)
+            else:
+                # Logika lama: Maintain Center X
+                # (Hanya dipakai jika user ganti font/size manual tanpa ganti preset)
+                # ... (kode centering lama kamu bisa ditaruh sini atau biarkan) ...
+                pass
 
-    # 3. LOGIKA GENERATE TRANSCRIPT (AssemblyAI)
-    def on_generate_transcript(self, options):
-        # Cari video utama untuk diambil audionya
-        target_item = None
-        for item in self.preview.scene.items():
-            if isinstance(item, VideoItem) and item.file_path and not item.settings.get("is_bg"):
-                target_item = item
-                break
+    def _apply_caption_alignment(self, item):
+        """
+        Menghitung posisi X,Y berdasarkan alignment (bottom_center, bottom_left, dll)
+        """
+        s = item.settings
+        alignment = s.get("alignment", "bottom_center")
+        margin_v = s.get("margin_v", 40)
+        margin_h = s.get("margin_h", 60)
         
-        if not target_item:
-            QMessageBox.warning(self.view, "Error", "Tidak ada video di timeline untuk ditranskrip.")
+        # Dimensi Scene & Item
+        scene_rect = self.preview.scene.sceneRect()
+        W, H = scene_rect.width(), scene_rect.height()
+        w, h = item.rect().width(), item.rect().height()
+        
+        # Hitung Y (Vertical)
+        # Default: Bottom
+        new_y = H - h - margin_v
+        
+        if alignment == "middle_lower":
+            # Agak ke tengah dikit (misal 3/4 layar)
+            new_y = (H * 0.75) - (h / 2)
+
+        # Hitung X (Horizontal)
+        if alignment == "bottom_left":
+            new_x = margin_h
+        elif alignment == "bottom_right":
+            new_x = W - w - margin_h
+        else: # bottom_center (Default)
+            new_x = (W - w) / 2
+            
+        # Terapkan
+        item.setPos(new_x, new_y)
+        item.settings['x'] = new_x
+        item.settings['y'] = new_y
+            
+    # 3. LOGIKA GENERATE TRANSCRIPT (AssemblyAI)
+    def on_generate_caption(self, data):
+        api_key = data.get("api_key")
+        
+        if not api_key:
+            print("[ERROR] API Key Missing")
             return
 
-        print("🚀 Memulai Transkripsi AssemblyAI...")
-        # (Idealnya gunakan QThread agar UI tidak freeze)
+        self.status_bar.showMessage("⏳ Transcribing audio via AssemblyAI...")
+        
+        # 1. Jalankan Thread Transcribe (seperti biasa)
+        # (Asumsi kamu pakai worker thread atau langsung call function)
+        import threading
+        t = threading.Thread(target=self._process_transcription, args=(api_key, data))
+        t.start()
+        
+    def _get_api_key_from_env(self):
+        """Membaca file engine/caption/.env manual tanpa library dotenv"""
+        env_path = os.path.join(os.getcwd(), "engine", "caption", ".env")
+        if not os.path.exists(env_path):
+            return None
+        
         try:
-            self.transcript_data = get_transcript_data(target_item.file_path)
-            if self.transcript_data:
-                QMessageBox.information(self.view, "Sukses", f"Berhasil generate {len(self.transcript_data)} kata.")
-            else:
-                QMessageBox.warning(self.view, "Gagal", "Hasil transkrip kosong.")
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("ASSEMBLYAI_API_KEY="):
+                        return line.split("=", 1)[1]
         except Exception as e:
-            print(f"Error: {e}")
-            QMessageBox.warning(self.view, "Error", f"Terjadi kesalahan: {e}")
+            print(f"[ERROR] Gagal baca .env: {e}")
+        return None
+    def _run_transcription_process(self, config):
+        """
+        Menjalankan flow: Extract Audio -> Transcribe -> Segment -> Build ASS
+        Mengembalikan path file .ass
+        """
+        try:
+            from engine.caption import assemblyai, word_adapter, ass_builder
+            
+            # 1. Gunakan audio dari video sekarang (pastikan variable ini di-set saat load video)
+            # Jika tidak ada, coba ambil track audio pertama
+            audio_source = getattr(self, 'current_audio_path', None)
+            if not audio_source and self.audio_tracks:
+                audio_source = self.audio_tracks[0]
 
+            if not audio_source: 
+                print("[CAPTION] No audio source found for transcription.")
+                return None
+
+            # 2. Transcribe
+            print(f"[CAPTION] Start Transcribing: {audio_source}")
+            words = assemblyai.transcribe_audio(config["api_key"], audio_source)
+            
+            if not words:
+                return None
+                
+            # 3. Grouping / Segmentasi
+            grouped_lines = word_adapter.group_words_custom(words, config)
+            ass_data = word_adapter.format_lines_to_ass(grouped_lines)
+            
+            # 4. Buat File ASS
+            # Menggabungkan style visual dari config ke ass_builder
+            ass_path = ass_builder.build_ass_file(ass_data, config) 
+            
+            print(f"[CAPTION] ASS File created: {ass_path}")
+            return ass_path
+
+        except Exception as e:
+            print(f"[ERROR TRANSCRIPTION] {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    def _process_transcription(self, api_key, config):
+        from engine.caption import assemblyai
+        
+        # 1. Ambil path audio dari video yang sedang dimuat
+        audio_path = self.current_audio_path # Atau logic extract audio temp kamu
+        
+        # 2. Transcribe
+        words = assemblyai.transcribe_audio(api_key, audio_path)
+        
+        if not words:
+            print("[ERROR] Transcription failed or empty")
+            return
+
+        # 3. [BARU] Grouping Words sesuai Config UI
+        grouped_lines = word_adapter.group_words_custom(words, config)
+        ass_data = word_adapter.format_lines_to_ass(grouped_lines)
+        
+        # 4. Buat ASS File
+        from engine.caption import ass_builder
+        ass_content = ass_builder.build_ass_file(ass_data) # Sesuaikan nama fungsi di ass_builder kamu
+        
+        # 5. Simpan & Reload Preview (di Main Thread)
+        # Gunakan QMetaObject.invokeMethod atau Signal untuk update UI dari thread
+        # ... (Kode simpan file .ass dan reload video item) ...
+        
     # --- [MODIFIED] RENDER LOGIC ---
     def on_render_clicked(self):
-        # Simpan config juga saat tombol render ditekan
+        # Simpan config terakhir
         self.save_app_config()
-        
         self.recalculate_global_duration()
         current_duration = max(0.1, float(self.engine.duration))
         
+        # 1. Validasi Folder Output
         folder_path = self.layer_panel.render_tab.txt_folder.text().strip()
         if not folder_path or not os.path.exists(folder_path):
             QMessageBox.warning(self.view, "Folder Tidak Valid", "Silakan pilih folder tujuan yang valid!")
@@ -364,7 +500,7 @@ class EditorController:
         filename = f"MamenPro_{timestamp}.mp4"
         output_path = os.path.join(folder_path, filename)
         
-        # Penentuan Resolusi
+        # 2. Kalkulasi Resolusi (Maintain Existing Logic)
         quality_txt = self.layer_panel.render_tab.combo_quality.currentText()
         if "480p" in quality_txt: target_short = 480
         elif "720p" in quality_txt: target_short = 720
@@ -383,57 +519,58 @@ class EditorController:
         if final_h % 2 != 0: final_h += 1
         
         print(f"[RENDER START] File: {output_path} | Size: {final_w}x{final_h}")
-        
-        # [BARU] Persiapan File Subtitle .ass
+
+        # 3. [BARU] Proses Caption / Subtitle
         caption_ass_path = None
         is_caption_on = False
         if hasattr(self.setting, 'caption_tab'):
              is_caption_on = self.setting.caption_tab.chk_enable_caption.isChecked()
-        
-        # Pastikan ada data transkrip
-        if is_caption_on and hasattr(self, 'transcript_data') and self.transcript_data:
-            
-            # Cari posisi dummy layer terakhir untuk mendapatkan margin
-            dummy_layer = None
-            for item in self.preview.scene.items():
-                if hasattr(item, 'name') and item.name == "CAPTION_LAYER":
-                    dummy_layer = item
-                    break
-            
+
+        if is_caption_on:
+            self.layer_panel.render_tab.btn_render.setText("Transcribing...")
+            self.view.repaint() # Force UI update
+
+            # A. Ambil API Key
+            api_key = self._get_api_key_from_env()
+            if not api_key:
+                QMessageBox.critical(self.view, "API Key Missing", "API Key AssemblyAI tidak ditemukan di engine/caption/.env")
+                self.layer_panel.render_tab.btn_render.setText("MULAI RENDER")
+                return
+
+            # B. Siapkan Config Caption
+            # Kita ambil style visual dari layer 'CAPTION_LAYER' di canvas agar sinkron
             caption_layer = next((i for i in self.preview.scene.items() if getattr(i, 'name', '') == "CAPTION_LAYER"), None)
-            margin_v = 70 # Default
-            if caption_layer and caption_layer.isVisible():
-                # Hitung jarak dari bawah canvas ke bottom bounding box caption
+            
+            caption_config = {
+                "api_key": api_key,
+                "max_chars": 30, # Default atau ambil dari UI
+                "max_lines": 2,
+            }
+            
+            # Tambahkan visual style jika layer ada
+            if caption_layer:
+                caption_config.update(caption_layer.settings)
+                # Hitung margin bottom visual
                 canvas_h = self.preview.scene.sceneRect().height()
                 item_bottom_y = caption_layer.y() + caption_layer.rect().height()
                 margin_v = int(canvas_h - item_bottom_y)
-                if margin_v < 10: margin_v = 10
+                caption_config['margin_v'] = max(10, margin_v)
 
-                # Generate ASS Content
-                ass_content = make_ass_from_words(
-                    self.transcript_data,
-                    font=dummy_layer.settings.get("font", "Arial"),
-                    size=dummy_layer.settings.get("font_size", 40),
-                    color=self._hex_to_ass_color(dummy_layer.settings.get("text_color", "#ffffff")),
-                    outline=dummy_layer.settings.get("stroke_width", 2),
-                    outline_color=self._hex_to_ass_color(dummy_layer.settings.get("stroke_color", "#000000")),
-                    margin_v=margin_v 
-                )
-                
-                # Simpan ke temp file
-                fd, caption_ass_path = tempfile.mkstemp(suffix=".ass")
-                os.close(fd)
-                with open(caption_ass_path, "w", encoding="utf-8") as f:
-                    f.write(ass_content)
+            # C. Jalankan Transkripsi (Synchronous)
+            caption_ass_path = self._run_transcription_process(caption_config)
+            
+            if caption_ass_path:
                 self.temp_files.append(caption_ass_path)
-        
-        # --- PERSIAPAN VISUAL ITEMS ---
+            else:
+                print("[WARN] Caption generation failed, rendering video without caption.")
+
+        # 4. Persiapan Visual Items (Maintain Existing Logic)
         items_data = []
-        self.temp_files = [] 
+        # Jangan clear temp_files di sini karena ass_path ada di dalamnya
         active_items = [i for i in self.preview.scene.items() if isinstance(i, VideoItem)]
 
         for item in active_items:
-            # SKIP CAPTION LAYER agar tidak dirender sebagai gambar statis
+            # SKIP CAPTION LAYER agar tidak dirender sebagai gambar statis (karena sudah jadi ASS)
             if getattr(item, 'name', '') == "CAPTION_LAYER": continue
 
             if item.opacity() == 0 or not item.isVisible(): continue
@@ -460,7 +597,7 @@ class EditorController:
                 if ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']: is_static_image = True
                 else: is_static_image = False 
 
-            # Kalkulasi Koordinat & Skala
+            # Kalkulasi Koordinat & Skala (Sama seperti sebelumnya)
             if is_bg:
                 if not item.current_pixmap: continue
                 canvas_w, canvas_h = int(orig_w), int(orig_h)
@@ -485,6 +622,7 @@ class EditorController:
                 
             sf_l = item.settings.get('sf_l', 0)
             sf_r = item.settings.get('sf_r', 0)
+            
             items_data.append({
                 'path': render_path, 'is_image': is_static_image,
                 'x': px, 'y': py, 'visual_w': vw, 'visual_h': vh,
@@ -497,9 +635,6 @@ class EditorController:
                 'f_r': item.settings.get('f_r', 0),
                 'f_t': item.settings.get('f_t', 0),
                 'f_b': item.settings.get('f_b', 0),
-                
-                # --- [TAMBAHAN BARU] ---
-                # Kirim data Blur & Vignette ke Render Engine
                 'blur': item.settings.get('blur', 0),
                 'vig_strength': item.settings.get('vig_strength', 0.0),
                 'vig_angle': item.settings.get('vig_angle', 0.0)
@@ -517,11 +652,11 @@ class EditorController:
         self.layer_panel.render_tab.btn_stop.setEnabled(True)
         self.layer_panel.render_tab.btn_render.setText("Rendering...")
         
-        # Start Worker dengan Subtitle File
+        # 5. Start Worker
         self.worker = RenderWorker(
             items_data, output_path, current_duration, 
             final_w, final_h, self.audio_tracks,
-            subtitle_file=caption_ass_path # Pass file ASS ke worker
+            subtitle_file=caption_ass_path 
         )
         self.worker.sig_finished.connect(self.on_render_finished)
         self.worker.start()
