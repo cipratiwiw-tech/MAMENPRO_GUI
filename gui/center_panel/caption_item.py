@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QGraphicsRectItem
 from PySide6.QtCore import Qt, QRectF, QRect 
 from PySide6.QtGui import QFont, QFontMetrics, QColor, QPen, QBrush
 
-from gui.center_panel.video_item import VideoItem
+from canvas.video_item import VideoItem
 
 class CaptionItem(VideoItem):
     def __init__(self, name="CAPTION_LAYER", *args, **kwargs):

@@ -4,7 +4,7 @@ from PySide6.QtGui import QBrush, QPen, QColor, QPainter
 from PySide6.QtCore import Qt, QTimer, Signal
 
 # Import komponen terkait
-from gui.center_panel.video_item import VideoItem
+from canvas.video_item import VideoItem
 from gui.center_panel.video_view import VideoGraphicsView
 
 class PreviewPanel(QWidget):

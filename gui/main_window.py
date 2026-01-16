@@ -4,12 +4,12 @@ from PySide6.QtCore import Qt
 
 # Import UI Components
 from gui.center_panel.preview_panel import PreviewPanel
-from gui.left_panel.layer_panel import LayerPanel
+from gui.panels.layer_panel import LayerPanel
 from gui.right_panel.setting_panel import SettingPanel
 from engine.preview_engine import PreviewEngine 
 
 # Import Controller
-from gui.controllers.main_controller import EditorController
+from manager.editor_controller import EditorController
 
 try:
     from gui.styles import STYLESHEET

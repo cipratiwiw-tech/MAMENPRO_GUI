@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget)
 from PySide6.QtCore import Signal
-from gui.right_panel.media_tab import MediaTab
-from gui.right_panel.text_tab import TextTab
-from gui.right_panel.caption_tab import CaptionTab
+from gui.panels.media_panel import MediaTab
+from gui.panels.text_panel import TextTab
+from gui.panels.caption_panel import CaptionTab
 from gui.right_panel.bulk_tab import BulkTab
 
 class SettingPanel(QWidget):

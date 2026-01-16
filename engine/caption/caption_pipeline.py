@@ -3,11 +3,11 @@ import os
 import subprocess
 import tempfile
 import av
-from engine.caption.assemblyai import assembly_upload, assembly_transcribe
-from engine.caption.ass_builder import make_ass_from_words
+from engine.caption.transcriber import assembly_upload, assembly_transcribe
+from engine.caption.ass_writer import make_ass_from_words
 from engine.caption.subtitle_renderer import burn_subtitle
 from engine.caption.lang_detect import detect_language
-from engine.caption.assemblyai import assembly_upload, assembly_transcribe
+
 
 # [TAMBAHKAN FUNGSI INI]
 def get_transcript_data(video_path):

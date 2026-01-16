@@ -3,7 +3,7 @@ from PySide6.QtGui import QPainter, QMouseEvent, QWheelEvent, QBrush, QColor, QP
 from PySide6.QtCore import Qt, Signal
 
 # Import hanya untuk pengecekan tipe (agar View tau mana yang VideoItem)
-from gui.center_panel.video_item import VideoItem 
+from canvas.video_item import VideoItem 
 
 class CanvasContainer(QGraphicsRectItem):
     def __init__(self, w, h):

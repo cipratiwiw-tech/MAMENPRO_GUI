@@ -7,16 +7,16 @@ from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 
 from manager.media_manager import MediaManager
-from gui.center_panel.video_item import VideoItem, BackgroundItem
-from engine.caption.caption_flow import apply_caption, get_transcript_data
+from canvas.video_item import VideoItem, BackgroundItem
+from engine.caption.caption_pipeline import apply_caption, get_transcript_data
 from gui.utils.bg_service import BackgroundService
 from engine.render_engine import RenderWorker
-from gui.right_panel.caption_tab import CaptionTab
+from gui.panels.caption_panel import CaptionTab
 from gui.center_panel.caption_item import CaptionItem
-from engine.caption import word_adapter
+from engine.caption import word_grouper
 
 # [BARU] Import untuk generate subtitle ASS
-from engine.caption.ass_builder import make_ass_from_words
+from engine.caption.ass_writer import make_ass_from_words
 
 # Nama file config
 CONFIG_FILE = "user_config.json"
