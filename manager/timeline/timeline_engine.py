@@ -6,6 +6,11 @@ class TimelineEngine:
     def __init__(self):
         self._layers: List[LayerModel] = []
 
+    # ✅ [BARU] Properti publik untuk akses layer (dibutuhkan RenderEngine)
+    @property
+    def layers(self) -> List[LayerModel]:
+        return self._layers
+
     def add_layer(self, layer: LayerModel):
         self._layers.append(layer)
         self._sort_layers()
@@ -25,11 +30,9 @@ class TimelineEngine:
                 return layer
         return None
 
-    # [BARU] Sumber kebenaran durasi proyek
     def get_total_duration(self) -> float:
         if not self._layers:
             return 0.0
-        # Mencari waktu 'end' paling jauh dari semua layer
         return max((layer.time.end for layer in self._layers), default=0.0)
 
     def _sort_layers(self):
