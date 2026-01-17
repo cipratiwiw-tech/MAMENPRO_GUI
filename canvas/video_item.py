@@ -20,3 +20,9 @@ class VideoItem(QGraphicsItem):
         # BELUM render video
         # cuma placeholder biar keliatan item masuk scene
         painter.drawRect(self._rect)
+
+    def set_data(self, layer_data):
+        self.layer_id = layer_data.id # Simpan ID agar bisa dilacak
+        # Load path gambar/video jika ada
+        if layer_data.path:
+             self.set_video_source(layer_data.path)
