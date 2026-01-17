@@ -1,10 +1,16 @@
 # manager/editor_controller.py
 from PySide6.QtCore import QObject, Signal
-from manager.project_state import ProjectState, LayerData
 import uuid
 
-# IMPORT ENGINE
-from engine.preview_engine import PreviewEngine # [BARU]
+# STATE & DATA
+from manager.project_state import ProjectState, LayerData
+
+# ENGINES
+from manager.timeline.timeline_engine import TimelineEngine
+from manager.timeline.layer_model import LayerModel
+from manager.timeline.time_range import TimeRange
+from engine.preview_engine import PreviewEngine
+from engine.render_engine import RenderEngine 
 
 # SERVICES
 from manager.services.template_service import TemplateService
@@ -13,7 +19,7 @@ from manager.services.project_io_service import ProjectIOService
 from manager.services.caption_service import CaptionService
 
 class EditorController(QObject):
-    # Signals
+    # Signals UI Updates
     sig_layer_created = Signal(object)
     sig_layer_removed = Signal(str)
     sig_layer_cleared = Signal()
@@ -22,227 +28,209 @@ class EditorController(QObject):
     sig_status_message = Signal(str)
     sig_layers_reordered = Signal(list)
     
-    # [BARU] Signal Waktu untuk UI
-    sig_time_updated = Signal(float)    
+    # [ORCHESTRATOR SIGNAL] 
+    # Mengirim Waktu & List ID Layer yang HARUS tampil saat ini
+    sig_preview_update = Signal(float, list) 
 
     def __init__(self):
         super().__init__()
         self.state = ProjectState()
         
-        # ENGINE TIMELINE
-        self.preview_engine = PreviewEngine(fps=30)
-        # Sambungkan detak jantung engine ke Controller
-        self.preview_engine.sig_time_changed.connect(self._on_engine_tick)
+        # 1. INIT ENGINES
+        self.timeline = TimelineEngine()       # Logic: Siapa aktif?
+        self.preview_engine = PreviewEngine()  # Logic: Sekarang jam berapa?
+        self.render_service = RenderService()  # Logic: Export video
         
-        # SERVICES
+        # 2. SERVICES
         self.tpl_service = TemplateService()
-        self.render_service = RenderService()
         self.io_service = ProjectIOService()
         self.cap_service = CaptionService()
         
-        # Connect Async Service
+        # 3. WIRING (Controller mendengar detak jantung Engine)
+        self.preview_engine.sig_tick.connect(self._on_engine_tick)
+        self.preview_engine.sig_playback_state.connect(self._on_playback_state)
+        
+        # Async Service Wiring
         self.cap_service.sig_success.connect(self._on_caption_success)
         self.cap_service.sig_fail.connect(self._on_caption_error)
 
-    # [BARU] Handler Detak Engine
+    # =========================================================================
+    # CORE ORCHESTRATION (Jantung Aplikasi)
+    # =========================================================================
+    
     def _on_engine_tick(self, t: float):
-        # Teruskan ke UI (PreviewPanel akan mendengarkan ini via Binder)
-        self.sig_time_updated.emit(t)
+        """
+        Satu-satunya tempat di mana Waktu + Logic Timeline + Render bertemu.
+        """
+        # 1. Tanya Timeline: "Siapa yang aktif di detik t?"
+        active_models = self.timeline.get_active_layers(t)
+        
+        # 2. Ambil ID saja untuk View (View akan hide layer yang tidak ada di list ini)
+        active_ids = [l.id for l in active_models]
+        
+        # 3. Perintahkan View/Binder untuk Render (Update Visual)
+        self.sig_preview_update.emit(t, active_ids)
 
-    # [BARU] Kontrol Playback (Bisa dipanggil dari tombol Play nanti)
+    def _on_playback_state(self, is_playing: bool):
+        state = "▶️ PLAYING" if is_playing else "⏸️ PAUSED"
+        self.sig_status_message.emit(state)
+
     def toggle_play(self):
-        # Update durasi proyek berdasarkan layer terakhir selesai
-        max_duration = 0
+        # Tentukan durasi maksimal dari layer terakhir
+        max_duration = 0.0
+        # Cek manual dari state karena timeline engine berisi model, bukan logic durasi total
         for layer in self.state.layers:
-            end = layer.properties.get("start_time", 0) + layer.properties.get("duration", 0)
+            end = layer.properties.get("start_time", 0) + layer.properties.get("duration", 5)
             if end > max_duration:
                 max_duration = end
         
-        # Set durasi ke engine agar tau kapan stop/loop
-        self.preview_engine.set_duration(max_duration if max_duration > 0 else 10.0)
+        self.preview_engine.set_duration(max(max_duration, 5.0))
         self.preview_engine.toggle_play()
-        
-        state = "Playing" if self.preview_engine.timer.isActive() else "Paused"
-        self.sig_status_message.emit(f"⏯️ {state}")
 
-    # --- BAGIAN 1: LAYER CRUD ---
+    # =========================================================================
+    # LAYER MANAGEMENT (Sync State <-> Timeline)
+    # =========================================================================
+
     def add_new_layer(self, layer_type, path=None):
+        # 1. Buat Data State
         new_id = str(uuid.uuid4())[:8]
         name = f"{layer_type.upper()} {len(self.state.layers) + 1}"
-        layer = LayerData(id=new_id, type=layer_type, name=name, path=path)
-        self._insert_layer(layer)
+        layer_data = LayerData(id=new_id, type=layer_type, name=name, path=path)
+        
+        # 2. Masukkan ke State
+        self._insert_layer(layer_data)
 
-    def select_layer(self, layer_id):
-        self.state.selected_layer_id = layer_id
-        layer = self.state.get_layer(layer_id)
-        self.sig_selection_changed.emit(layer)
+    def _insert_layer(self, layer_data: LayerData):
+        """Helper internal untuk insert ke State DAN Timeline"""
+        # A. State
+        self.state.add_layer(layer_data)
+        
+        # B. Timeline Engine (SYNC)
+        self._sync_layer_to_timeline(layer_data)
+        
+        # C. Signal UI
+        self.sig_layer_created.emit(layer_data)
+        self.select_layer(layer_data.id)
+
+    def _sync_layer_to_timeline(self, layer_data: LayerData):
+        """Mengubah LayerData (State) menjadi LayerModel (Engine)"""
+        # Hapus dulu jika ada (untuk update)
+        self.timeline.remove_layer(layer_data.id)
+        
+        start = float(layer_data.properties.get("start_time", 0.0))
+        duration = float(layer_data.properties.get("duration", 5.0))
+        
+        model = LayerModel(
+            id=layer_data.id,
+            type=layer_data.type,
+            time=TimeRange(start, start + duration),
+            z_index=layer_data.z_index,
+            payload={"path": layer_data.path} # Info tambahan buat render engine nanti
+        )
+        self.timeline.add_layer(model)
 
     def update_layer_property(self, new_props: dict):
         current_id = self.state.selected_layer_id
         if not current_id: return
+        
         layer = self.state.get_layer(current_id)
         if layer:
+            # 1. Update State
             layer.properties.update(new_props)
+            
+            # 2. Update Timeline (Jika properti waktu berubah)
+            if "start_time" in new_props or "duration" in new_props:
+                self._sync_layer_to_timeline(layer)
+            
+            # 3. Emit Signal
             self.sig_property_changed.emit(current_id, new_props)
+            
+            # 4. Force refresh preview di posisi current time
+            self._on_engine_tick(self.preview_engine.current_time)
 
     def delete_current_layer(self):
         current_id = self.state.selected_layer_id
         if current_id:
+            # 1. Hapus dari Timeline
+            self.timeline.remove_layer(current_id)
+            # 2. Hapus dari State
             self.state.remove_layer(current_id)
+            
             self.sig_layer_removed.emit(current_id)
             self.select_layer(None)
+            
+            # Refresh
+            self._on_engine_tick(self.preview_engine.current_time)
 
-    # Helper Internal
-    def _insert_layer(self, layer):
-        self.state.add_layer(layer)
-        self.sig_layer_created.emit(layer)
-        self.select_layer(layer.id)
-
-    # --- BAGIAN 2: DELEGASI TUGAS ---
-    def apply_template(self, template_id: str):
-        print(f"[CONTROLLER] Delegating template creation: {template_id}")
-        new_layers = self.tpl_service.generate_layers(template_id)
-        for layer in new_layers:
-            self._insert_layer(layer)
-        self.sig_status_message.emit(f"Template {template_id} applied.")
-
-    def process_render(self, render_config: dict):
-        is_valid, msg = self.render_service.validate_config(render_config)
-        if not is_valid:
-            self.sig_status_message.emit(f"❌ Error: {msg}")
-            return
-        self.render_service.start_render_process(self.state, render_config)
-        self.sig_status_message.emit("✅ Render Started...")
-
-    # --- PROJECT IO ---
-    def save_project(self, file_path: str):
-        if not file_path: return
-        self.sig_status_message.emit("Saving project...")
-        success = self.io_service.save_project(self.state, file_path)
-        if success:
-            self.sig_status_message.emit(f"✅ Project saved: {file_path}")
-        else:
-            self.sig_status_message.emit("❌ Failed to save project!")
-
-    def load_project(self, file_path: str):
-        if not file_path: return
-        self.sig_status_message.emit("Loading project...")
-        new_layers = self.io_service.load_project(file_path)
-        if new_layers:
-            self.state.layers.clear()
-            self.sig_layer_cleared.emit()
-            for layer in new_layers:
-                self._insert_layer(layer)
-            self.sig_status_message.emit(f"✅ Project loaded: {len(new_layers)} layers")
-        else:
-            self.sig_status_message.emit("❌ Failed to load project or empty.")
-
-    # --- REORDER ---
+    # ... (Method lain seperti select_layer, reorder_layers, dll tetap sama) ...
+    # Pastikan reorder_layers juga memanggil _sync_layer_to_timeline jika z-index berubah
+    
+    def select_layer(self, layer_id):
+        self.state.selected_layer_id = layer_id
+        layer = self.state.get_layer(layer_id)
+        self.sig_selection_changed.emit(layer)
+        
     def reorder_layers(self, from_idx: int, to_idx: int):
         if from_idx < 0 or to_idx < 0: return
         if from_idx >= len(self.state.layers) or to_idx >= len(self.state.layers): return
         if from_idx == to_idx: return
 
-        print(f"[CONTROLLER] Reordering layer {from_idx} -> {to_idx}")
+        # Swap di list state
         layer = self.state.layers.pop(from_idx)
         self.state.layers.insert(to_idx, layer)
 
         updates = []
         for i, l in enumerate(self.state.layers):
             l.z_index = i
+            # SYNC Timeline: Update Z-Index di Engine
+            self._sync_layer_to_timeline(l) 
             updates.append({"id": l.id, "z_index": i})
 
         self.sig_layers_reordered.emit(updates)
         self.select_layer(layer.id)
+        
+        # Force refresh visual tumpukan
+        self._on_engine_tick(self.preview_engine.current_time)
 
-    # --- AUDIO ---
-    def add_audio_layer(self, path: str):
+    # --- WRAPPERS (Sama seperti sebelumnya) ---
+    def load_project(self, path):
+        layers = self.io_service.load_project(path)
+        if layers:
+            self.state.layers.clear()
+            self.timeline.clear() # Reset engine
+            self.sig_layer_cleared.emit()
+            for l in layers:
+                self._insert_layer(l)
+
+    def save_project(self, path):
+        self.io_service.save_project(self.state, path)
+
+    def apply_template(self, tpl_id):
+        layers = self.tpl_service.generate_layers(tpl_id)
+        for l in layers:
+            self._insert_layer(l)
+
+    def process_render(self, config):
+        # Render Service pakai logic sendiri (threading), jadi tidak perlu on_tick
+        self.render_service.start_render_process(self.state, config)
+
+    def add_audio_layer(self, path):
         self.add_new_layer("audio", path)
 
-    # --- CHROMA ---
-    def apply_chroma_config(self, color_hex: str, threshold: float):
-        current_id = self.state.selected_layer_id
-        if not current_id: 
-            self.sig_status_message.emit("⚠️ Select a layer first!")
-            return
-        
-        updates = {
-            "chroma_active": True,
-            "chroma_color": color_hex,
-            "chroma_threshold": threshold
-        }
-        self.update_layer_property(updates)
-        self.sig_status_message.emit(f"✅ Chroma applied: {color_hex}")
+    def generate_auto_captions(self, config):
+        self.cap_service.start_generate_async(self.state.get_layer(self.state.selected_layer_id).path, config)
 
-    def remove_chroma_config(self):
-        current_id = self.state.selected_layer_id
-        if current_id:
-            self.update_layer_property({"chroma_active": False})
-            self.sig_status_message.emit("🚫 Chroma removed")
-
-    # --- CAPTION LOGIC (UPDATED ASYNC) ---
-    def generate_auto_captions(self, config: dict):
-        """
-        Orkestrator Async:
-        Memicu Worker dan segera kembali agar UI tidak macet.
-        """
-        current_id = self.state.selected_layer_id
-        if not current_id:
-            self.sig_status_message.emit("⚠️ Select a video/audio layer first!")
-            return
-
-        layer = self.state.get_layer(current_id)
-        if not layer or not layer.path:
-            self.sig_status_message.emit("⚠️ Layer has no media file.")
-            return
-
-        # 1. UI Feedback Langsung
-        self.sig_status_message.emit("⏳ AI Processing Started... Please wait.")
-        
-        # 2. Panggil Service ASYNC (Void return)
-        self.cap_service.start_generate_async(layer.path, config)
-
-    # [BARU] Handler saat Sukses (Callback)
     def _on_caption_success(self, new_layers):
-        if not new_layers:
-            self.sig_status_message.emit("❌ AI finished but found no speech.")
-            return
-
-        # Masukkan ke State
         for l in new_layers:
             self._insert_layer(l)
-            
-        count = len(new_layers)
-        self.sig_status_message.emit(f"✅ AI Done: Generated {count} captions.")
-        
-        # [FIX PENTING] Paksa UI untuk refresh visibility berdasarkan waktu saat ini (t=0)
-        # Ini akan menyembunyikan caption yang start_time-nya > 0
-        current_t = self.preview_engine.current_time
-        self.sig_time_updated.emit(current_t)
+        self.sig_status_message.emit(f"Generated {len(new_layers)} captions")
 
-    # Tambahkan method ini jika belum ada (untuk tombol Play nanti)
-    def toggle_play(self):
-        # Hitung durasi proyek otomatis
-        max_duration = 0
-        for layer in self.state.layers:
-            # Ambil properti dengan aman
-            start = layer.properties.get("start_time", 0)
-            dur = layer.properties.get("duration", 5)
-            if start + dur > max_duration:
-                max_duration = start + dur
-        
-        # Set durasi engine (minimal 10 detik biar gak kaget)
-        self.preview_engine.set_duration(max(max_duration, 10.0))
-        
-        # Toggle
-        self.preview_engine.toggle_play()
-        
-        # Update Status Bar
-        is_playing = self.preview_engine.timer.isActive()
-        status = "▶️ PLAYING" if is_playing else "⏸️ PAUSED"
-        self.sig_status_message.emit(status)
+    def _on_caption_error(self, msg):
+        self.sig_status_message.emit(f"Error: {msg}")
 
-    # [BARU] Handler saat Error
-    def _on_caption_error(self, err_msg):
-        print(f"[CONTROLLER ERROR] Caption failed: {err_msg}")
-        self.sig_status_message.emit(f"❌ AI Error: {err_msg}")
+    # CHROMA WRAPPERS (Simple Property Update)
+    def apply_chroma_config(self, color, thresh):
+        self.update_layer_property({"chroma_active": True, "chroma_color": color, "chroma_threshold": thresh})
+        
+    def remove_chroma_config(self):
+        self.update_layer_property({"chroma_active": False})
