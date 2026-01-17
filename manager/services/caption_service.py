@@ -2,16 +2,21 @@
 import uuid
 import time
 from PySide6.QtCore import QObject, QThread, Signal
-from manager.project_state import LayerData
 
-# Nanti import engine asli: 
-# from engine.caption.transcriber import Transcriber
+# IMPORT DATA MODEL BARU
+from manager.timeline.layer_model import LayerModel
+from manager.timeline.time_range import TimeRange
+
+# IMPORT ENGINE ASLI (Bisa di-uncomment jika API Key sudah siap)
+# from engine.caption.transcriber import assembly_transcribe, assembly_upload
 
 class CaptionWorker(QThread):
     """
-    Worker: Kuli panggul yang bekerja di background.
+    Worker Thread yang mengubah Audio -> List of LayerModel.
+    Tidak ada rendering visual di sini.
     """
-    sig_finished = Signal(list) # Mengirim hasil (list of layers) ke Service
+    # Signal mengirim list[LayerModel] ke Controller
+    sig_finished = Signal(list) 
     sig_error = Signal(str)
 
     def __init__(self, audio_path, config):
@@ -21,57 +26,72 @@ class CaptionWorker(QThread):
 
     def run(self):
         try:
-            print(f"[WORKER] Starting AI Job for: {self.audio_path}")
+            # 1. --- PROSES BERAT (AI) ---
+            # Idealnya memanggil engine transcriber di sini.
+            # Untuk stabilitas langkah ini, kita gunakan Simulasi Data yang AKURAT secara struktur.
             
-            # --- SIMULASI PROSES BERAT ---
-            # Di real app, ini adalah proses upload & transcribe yang memakan waktu 10-60 detik.
-            # Kita pakai sleep agar terasa efek 'Loading'-nya di UI.
-            time.sleep(2.0) 
+            # [SIMULASI AI START]
+            time.sleep(1.5) # Simulasi latency network
             
-            # --- MOCK RESULT ---
-            mock_segments = [
-                {"text": "Halo semuanya", "start": 0.5, "end": 2.0},
-                {"text": "Selamat datang di", "start": 2.1, "end": 3.5},
-                {"text": "Tutorial MamenPro", "start": 3.6, "end": 5.0},
-                {"text": "Jangan lupa subscribe", "start": 5.1, "end": 7.0}
+            # Raw Data: Hasil murni dari Transcriber (seperti AssemblyAI / Whisper)
+            # Format: {'text': string, 'start': float (sec), 'end': float (sec)}
+            raw_segments = [
+                {"text": "Halo selamat datang", "start": 0.5, "end": 2.0},
+                {"text": "Di tutorial MamenPro", "start": 2.1, "end": 3.5},
+                {"text": "Editor video Python", "start": 3.6, "end": 5.0},
+                {"text": "Yang arsitekturnya rapi", "start": 5.1, "end": 7.0}
             ]
+            # [SIMULASI AI END]
             
-            new_layers = []
-            for i, seg in enumerate(mock_segments):
+            # 2. --- DATA MAPPING (Raw -> LayerModel) ---
+            results = []
+            
+            # Ambil config style dari UI (jika ada), atau default
+            style_payload = {
+                "font_family": self.config.get("font_family", "Arial"),
+                "font_size": self.config.get("font_size", 40),
+                "text_color": self.config.get("text_color", "#ffffff"),
+                "is_bold": True
+            }
+
+            for seg in raw_segments:
+                # Generate ID unik untuk setiap potongan caption
                 layer_id = str(uuid.uuid4())[:8]
                 
-                # [DEBT] Z-Index sementara di-hardcode disini.
-                # Nanti idealnya Controller yang mengatur stacking order final.
-                layer = LayerData(
+                # Buat Model Waktu
+                # Pastikan end > start
+                start_t = float(seg["start"])
+                end_t = float(seg["end"])
+                if end_t <= start_t: end_t = start_t + 1.0
+
+                # Buat Payload (Gabungan Teks + Style)
+                payload = style_payload.copy()
+                payload["text_content"] = seg["text"]
+
+                # Buat LayerModel
+                # Tipe 'caption' atau 'text' (tergantung renderer Anda nanti)
+                model = LayerModel(
                     id=layer_id,
-                    type="text",
-                    name=f"Sub {i+1}: {seg['text'][:10]}...",
-                    properties={
-                        "text_content": seg["text"],
-                        "start_time": seg["start"],
-                        "duration": seg["end"] - seg["start"],
-                        "y": 800, # Posisi bawah
-                        "font_size": 50,
-                        "text_color": "#ffff00",
-                        "is_bold": True
-                    },
-                    z_index=100 + i 
+                    type="text", 
+                    time=TimeRange(start_t, end_t),
+                    z_index=10, # Caption biasanya di atas (Z-Index tinggi)
+                    payload=payload
                 )
-                new_layers.append(layer)
+                
+                results.append(model)
             
-            # Pekerjaan selesai, lapor ke mandor (Service)
-            self.sig_finished.emit(new_layers)
+            # 3. --- SELESAI ---
+            self.sig_finished.emit(results)
             
         except Exception as e:
             self.sig_error.emit(str(e))
 
 class CaptionService(QObject):
     """
-    Service: Mandor yang mengatur Worker.
-    Controller bicara ke sini, bukan langsung ke thread.
+    Manager Service.
+    Jembatan Controller <-> Worker.
     """
-    # Signal Relay (Meneruskan dari Worker ke Controller)
-    sig_success = Signal(list)
+    sig_success = Signal(list) # meneruskan list[LayerModel]
     sig_fail = Signal(str)
 
     def __init__(self):
@@ -79,28 +99,15 @@ class CaptionService(QObject):
         self.worker = None
 
     def start_generate_async(self, audio_path: str, config: dict):
-        """
-        Memulai proses captioning tanpa memblokir UI.
-        """
-        # [CATATAN SAFETY] 
-        # Mematikan thread paksa (terminate) sebenarnya berbahaya untuk jangka panjang (memory leak).
-        # Tapi untuk fase dev awal ini, kita pastikan tidak ada double worker yang jalan.
+        # Matikan worker lama jika masih jalan (Clean up)
         if self.worker and self.worker.isRunning():
             self.worker.terminate()
             self.worker.wait()
             
-        # Siapkan Worker Baru
+        # Setup Worker Baru
         self.worker = CaptionWorker(audio_path, config)
-        
-        # Sambungkan Kabel
-        self.worker.sig_finished.connect(self._on_worker_finished)
+        self.worker.sig_finished.connect(self.sig_success)
         self.worker.sig_error.connect(self.sig_fail)
         
         # Jalankan
         self.worker.start()
-        
-    def _on_worker_finished(self, layers):
-        # Bersih-bersih worker
-        self.worker = None
-        # Teruskan data ke Controller
-        self.sig_success.emit(layers)

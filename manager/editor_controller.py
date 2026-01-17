@@ -76,45 +76,27 @@ class EditorController(QObject):
         self.sig_status_message.emit(state)
 
     def toggle_play(self):
-        # Tentukan durasi maksimal dari layer terakhir
-        max_duration = 0.0
-        # Cek manual dari state karena timeline engine berisi model, bukan logic durasi total
-        for layer in self.state.layers:
-            end = layer.properties.get("start_time", 0) + layer.properties.get("duration", 5)
-            if end > max_duration:
-                max_duration = end
-        
-        self.preview_engine.set_duration(max(max_duration, 5.0))
+        # [UPDATED] Mengambil durasi langsung dari Timeline Engine
+        # Tambahkan buffer sedikit (misal 1 detik) agar tidak berhenti mendadak pas di frame terakhir
+        total_dur = self.timeline.get_total_duration()
+        self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
         self.preview_engine.toggle_play()
 
-    # =========================================================================
-    # LAYER MANAGEMENT (Sync State <-> Timeline)
-    # =========================================================================
+    # --- SYNC LOGIC ---
 
     def add_new_layer(self, layer_type, path=None):
-        # 1. Buat Data State
         new_id = str(uuid.uuid4())[:8]
         name = f"{layer_type.upper()} {len(self.state.layers) + 1}"
         layer_data = LayerData(id=new_id, type=layer_type, name=name, path=path)
-        
-        # 2. Masukkan ke State
         self._insert_layer(layer_data)
 
     def _insert_layer(self, layer_data: LayerData):
-        """Helper internal untuk insert ke State DAN Timeline"""
-        # A. State
         self.state.add_layer(layer_data)
-        
-        # B. Timeline Engine (SYNC)
         self._sync_layer_to_timeline(layer_data)
-        
-        # C. Signal UI
         self.sig_layer_created.emit(layer_data)
         self.select_layer(layer_data.id)
 
     def _sync_layer_to_timeline(self, layer_data: LayerData):
-        """Mengubah LayerData (State) menjadi LayerModel (Engine)"""
-        # Hapus dulu jika ada (untuk update)
         self.timeline.remove_layer(layer_data.id)
         
         start = float(layer_data.properties.get("start_time", 0.0))
@@ -125,50 +107,39 @@ class EditorController(QObject):
             type=layer_data.type,
             time=TimeRange(start, start + duration),
             z_index=layer_data.z_index,
-            payload={"path": layer_data.path} # Info tambahan buat render engine nanti
+            payload={"path": layer_data.path}
         )
         self.timeline.add_layer(model)
-
-    def update_layer_property(self, new_props: dict):
-        current_id = self.state.selected_layer_id
-        if not current_id: return
         
-        layer = self.state.get_layer(current_id)
-        if layer:
-            # 1. Update State
-            layer.properties.update(new_props)
-            
-            # 2. Update Timeline (Jika properti waktu berubah)
-            if "start_time" in new_props or "duration" in new_props:
-                self._sync_layer_to_timeline(layer)
-            
-            # 3. Emit Signal
-            self.sig_property_changed.emit(current_id, new_props)
-            
-            # 4. Force refresh preview di posisi current time
-            self._on_engine_tick(self.preview_engine.current_time)
+        # [OPTIONAL] Update durasi preview engine saat ada layer baru/berubah
+        # agar seek bar (kalau ada) langsung menyesuaikan panjang timeline
+        total_dur = self.timeline.get_total_duration()
+        self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
 
     def delete_current_layer(self):
         current_id = self.state.selected_layer_id
         if current_id:
-            # 1. Hapus dari Timeline
             self.timeline.remove_layer(current_id)
-            # 2. Hapus dari State
             self.state.remove_layer(current_id)
-            
             self.sig_layer_removed.emit(current_id)
             self.select_layer(None)
-            
-            # Refresh
             self._on_engine_tick(self.preview_engine.current_time)
 
-    # ... (Method lain seperti select_layer, reorder_layers, dll tetap sama) ...
-    # Pastikan reorder_layers juga memanggil _sync_layer_to_timeline jika z-index berubah
-    
     def select_layer(self, layer_id):
         self.state.selected_layer_id = layer_id
         layer = self.state.get_layer(layer_id)
         self.sig_selection_changed.emit(layer)
+
+    def update_layer_property(self, new_props: dict):
+        current_id = self.state.selected_layer_id
+        if not current_id: return
+        layer = self.state.get_layer(current_id)
+        if layer:
+            layer.properties.update(new_props)
+            if "start_time" in new_props or "duration" in new_props:
+                self._sync_layer_to_timeline(layer)
+            self.sig_property_changed.emit(current_id, new_props)
+            self._on_engine_tick(self.preview_engine.current_time)
         
     def reorder_layers(self, from_idx: int, to_idx: int):
         if from_idx < 0 or to_idx < 0: return
