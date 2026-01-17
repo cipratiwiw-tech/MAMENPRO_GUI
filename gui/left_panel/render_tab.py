@@ -1,98 +1,122 @@
 # gui/left_panel/render_tab.py
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, 
-                             QLineEdit, QComboBox, QFormLayout, QHBoxLayout)
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QLineEdit,
+    QPushButton, QComboBox, QFileDialog, QHBoxLayout
+)
 from PySide6.QtCore import Signal
-from gui.services.media_dialog_service import MediaDialogService
-import os # <--- [TAMBAHAN IMPORT]
+
 
 class RenderTab(QWidget):
-    # SIGNAL OUT: User request render dengan config ini
-    sig_request_render = Signal(dict)
+    sig_start_render = Signal(dict)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
-        self._init_ui()
+    def __init__(self):
+        super().__init__()
 
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        
-        lbl = QLabel("EXPORT VIDEO")
-        lbl.setStyleSheet("font-weight: bold; color: #e06c75; margin-bottom: 10px;")
-        layout.addWidget(lbl)
+        # 🔧 Layout utama — dipadatkan
+        self.layout = QVBoxLayout(self)
+        self.layout.setSpacing(6)
+        self.layout.setContentsMargins(8, 8, 8, 8)
 
-        # FORM
-        form = QFormLayout()
-        
+        # ===============================
+        # Title
+        # ===============================
+        lbl_title = QLabel("Export Settings")
+        lbl_title.setStyleSheet("""
+            font-weight: bold;
+            font-size: 13px;
+            color: #ccc;
+            padding-bottom: 4px;
+        """)
+        self.layout.addWidget(lbl_title)
+
+        # ===============================
         # Output Path
-        self.txt_path = QLineEdit("output.mp4")
-        self.btn_browse = QPushButton("...")
-        self.btn_browse.setFixedWidth(40)
-        self.btn_browse.clicked.connect(self._on_browse)
-        
+        # ===============================
+        lbl_output = QLabel("Output File")
+        lbl_output.setStyleSheet("color: #aaa;")
+        self.layout.addWidget(lbl_output)
+
         path_layout = QHBoxLayout()
-        path_layout.addWidget(self.txt_path)
-        path_layout.addWidget(self.btn_browse)
-        form.addRow("File:", path_layout)
+        path_layout.setSpacing(4)
 
-        # Resolution
-        self.combo_res = QComboBox()
-        self.combo_res.addItems(["1920x1080 (FHD)", "1280x720 (HD)", "1080x1920 (TikTok)"])
-        form.addRow("Res:", self.combo_res)
+        self.input_path = QLineEdit("output.mp4")
+        self.input_path.setFixedHeight(26)
+        self.input_path.setStyleSheet("""
+            padding: 4px;
+            color: #fff;
+            background: #333;
+            border: 1px solid #555;
+        """)
+        path_layout.addWidget(self.input_path)
 
+        btn_browse = QPushButton("...")
+        btn_browse.setFixedSize(28, 26)
+        btn_browse.setStyleSheet("background: #444; color: white;")
+        btn_browse.clicked.connect(self._browse_file)
+        path_layout.addWidget(btn_browse)
+
+        self.layout.addLayout(path_layout)
+
+        # ===============================
         # FPS
+        # ===============================
+        self.layout.addWidget(QLabel("Frame Rate"))
+
         self.combo_fps = QComboBox()
-        self.combo_fps.addItems(["30 FPS", "60 FPS", "24 FPS"])
-        form.addRow("FPS:", self.combo_fps)
+        self.combo_fps.setFixedHeight(26)
+        self.combo_fps.addItems(["24", "30", "60"])
+        self.combo_fps.setCurrentText("30")
+        self.layout.addWidget(self.combo_fps)
 
-        layout.addLayout(form)
-        layout.addStretch()
+        # ===============================
+        # Quality
+        # ===============================
+        self.layout.addWidget(QLabel("Quality"))
 
-        # ACTION BUTTON
-        self.btn_render = QPushButton("🚀 START RENDER")
+        self.combo_quality = QComboBox()
+        self.combo_quality.setFixedHeight(26)
+        self.combo_quality.addItems([
+            "High (CRF 18)",
+            "Medium (CRF 23)",
+            "Low (CRF 28)"
+        ])
+        self.layout.addWidget(self.combo_quality)
+
+        # Dorong tombol ke bawah
+        self.layout.addStretch()
+
+        # ===============================
+        # Render Button
+        # ===============================
+        self.btn_render = QPushButton("START RENDER")
+        self.btn_render.setFixedHeight(36)
         self.btn_render.setStyleSheet("""
-            QPushButton { background-color: #e06c75; color: white; font-weight: bold; padding: 12px; border-radius: 4px; }
-            QPushButton:hover { background-color: #ff7b86; }
+            QPushButton {
+                background-color: #007acc;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #0098ff; }
+            QPushButton:pressed { background-color: #005a9e; }
         """)
         self.btn_render.clicked.connect(self._on_render_click)
-        layout.addWidget(self.btn_render)
+        self.layout.addWidget(self.btn_render)
 
-    def _on_browse(self):
-        path = MediaDialogService.get_save_location(self, self.txt_path.text())
+    # ===============================
+    # Slots
+    # ===============================
+    def _browse_file(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Video", "output.mp4", "Video Files (*.mp4)"
+        )
         if path:
-            self.txt_path.setText(path)
+            self.input_path.setText(path)
 
     def _on_render_click(self):
-        # 1. Parsing Resolution
-        res_text = self.combo_res.currentText() 
-        res_part = res_text.split(" ")[0]       
-        w_str, h_str = res_part.split("x")
-        width = int(w_str)
-        height = int(h_str)
-
-        # 2. Parsing FPS
-        fps_text = self.combo_fps.currentText()
-        fps = int(fps_text.split(" ")[0])       
-
-        # 3. [PERBAIKAN VITAL] Validasi Ekstensi Path
-        raw_path = self.txt_path.text().strip()
-        if not raw_path:
-            raw_path = "output.mp4" # Default jika kosong
-            
-        # Cek apakah user lupa nulis .mp4
-        filename, ext = os.path.splitext(raw_path)
-        if not ext:
-            raw_path += ".mp4" # Paksa tambah .mp4
-        
-        # Update UI text agar user sadar
-        self.txt_path.setText(raw_path)
-
-        # 4. Bungkus Config
-        config = {
-            "path": raw_path, 
-            "width": width,
-            "height": height,
-            "fps": fps
+        settings = {
+            "output_path": self.input_path.text() or "output.mp4",
+            "fps": int(self.combo_fps.currentText()),
+            "quality": self.combo_quality.currentText()
         }
-        
-        self.sig_request_render.emit(config)
+        self.sig_start_render.emit(settings)
