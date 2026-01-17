@@ -1,123 +1,89 @@
-import time
-import gc
-import os
-from PySide6.QtCore import QThread, Signal, QObject
-from PySide6.QtGui import QImage 
-
-from engine.compositor import Compositor
-from engine.ffmpeg_renderer import FFmpegRenderer
-from engine.video_service import VideoService
+import copy
+from PySide6.QtCore import QObject, Signal, QThread
 from manager.timeline.timeline_engine import TimelineEngine
+from engine.ffmpeg_renderer import FFmpegRenderer
+from engine.compositor import Compositor
+
 
 class RenderWorker(QThread):
     sig_progress = Signal(int)
     sig_finished = Signal(bool, str)
     sig_log = Signal(str)
 
-    def __init__(self, timeline_engine: TimelineEngine, output_path: str, config: dict):
+    def __init__(self, timeline: TimelineEngine, config: dict, video_service):
         super().__init__()
-        self.timeline = timeline_engine 
-        self.output_path = output_path
+        self.timeline = timeline
         self.config = config
-        
-        self.fps = config.get("fps", 30)
-        self.width = config.get("width", 1920)
-        self.height = config.get("height", 1080)
-        
-        self.is_cancelled = False
+        self.video_service = video_service
+        self.is_running = True
 
     def run(self):
-        render_vs = VideoService()
-        renderer = None
-        
         try:
-            # 1. ANALISA AUDIO (SINGLE TRACK)
-            # Cari layer pertama yang punya potensi suara (video/audio)
-            audio_path = None
-            audio_delay_ms = 0
-            
-            # Akses private member _layers (ini shortcut aman karena kita di worker copy)
-            # Sebaiknya timeline_engine punya method public, tapi untuk sekarang ok.
-            all_layers = self.timeline._layers 
-            
-            for layer in all_layers:
-                if layer.type in ["video", "audio"]:
-                    # Ambil path dari payload
-                    path = layer.payload.get("path")
-                    if path and os.path.exists(path):
-                        audio_path = path
-                        # Hitung delay (start_time * 1000)
-                        start_time = layer.time.start
-                        audio_delay_ms = int(start_time * 1000)
-                        
-                        self.sig_log.emit(f"🎤 Audio Source: {os.path.basename(path)} (Delay: {audio_delay_ms}ms)")
-                        break # HANYA 1 TRACK SESUAI JANJI
+            compositor = Compositor()
 
-            # 2. SETUP RENDERER
-            compositor = Compositor(render_vs, self.width, self.height)
-            renderer = FFmpegRenderer(self.output_path, self.width, self.height, self.fps)
-            
-            # Start process DENGAN AUDIO CONFIG
-            renderer.start_process(audio_path=audio_path, audio_delay_ms=audio_delay_ms)
-            
-            total_duration = self.timeline.get_total_duration()
-            if total_duration <= 0: total_duration = 1.0
-            
-            total_frames = int(total_duration * self.fps)
-            self.sig_log.emit(f"Rendering {total_frames} frames...")
+            output_path = self.config["path"]
+            width = self.config["width"]
+            height = self.config["height"]
+            fps = self.config["fps"]
 
-            # 3. RENDER LOOP (Sama seperti sebelumnya)
-            for frame_idx in range(total_frames):
-                if self.is_cancelled:
-                    self.sig_log.emit("⚠️ Render Cancelled")
-                    break
-                
-                current_time = frame_idx / self.fps
-                
-                # A. Rendering Visual
-                active_layers = self.timeline.get_active_layers(current_time)
-                qimage = compositor.compose_frame(current_time, active_layers)
-                
-                if qimage.isNull(): continue 
+            renderer = FFmpegRenderer(width, height, fps)
+            renderer.start_process(output_path)
 
-                qimage_rgb = qimage.convertToFormat(QImage.Format_RGB888)
-                ptr = qimage_rgb.constBits()
-                if ptr:
-                    renderer.write_frame(ptr.tobytes())
-                
-                # B. Progress
-                if frame_idx % 10 == 0:
-                    pct = int((frame_idx / total_frames) * 100)
-                    self.sig_progress.emit(pct)
+            total_duration = self.timeline.get_active_duration()  # seconds
+            total_frames = int(total_duration * fps)
 
-            if self.is_cancelled:
-                self.sig_finished.emit(False, "Cancelled")
-            else:
-                self.sig_finished.emit(True, self.output_path)
+            self.sig_log.emit(
+                f"🎬 Rendering {total_frames} frames @ {fps} FPS"
+            )
+
+            for i in range(total_frames):
+                if not self.is_running:
+                    renderer.close_process()
+                    self.sig_finished.emit(False, "Cancelled")
+                    return
+
+                t = i / float(fps)  # seconds (SINGLE SOURCE OF TRUTH)
+
+                active_layers = self.timeline.get_active_layers(t)
+                frame = compositor.compose(
+                    t, active_layers, width, height
+                )
+
+                if frame is not None:
+                    renderer.write_frame(frame)
+
+                if i % 10 == 0 and total_frames > 0:
+                    self.sig_progress.emit(int(i / total_frames * 100))
+
+            renderer.close_process()
+            self.sig_progress.emit(100)
+            self.sig_finished.emit(True, output_path)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             self.sig_finished.emit(False, str(e))
-            
-        finally:
-            self.sig_log.emit("🧹 Cleaning up...")
-            if renderer: renderer.close_process()
-            render_vs.release_all()
-            gc.collect()
-            
-            self.quit()   # ⬅️ beri sinyal ke Qt event loop
 
-# Class RenderService tetap sama, tidak perlu diubah
+    def stop(self):
+        self.is_running = False
+
+
 class RenderService(QObject):
-    def __init__(self):
-        super().__init__()
-        self.worker = None
+    """
+    Service facade untuk render final.
+    """
 
-    def start_render_process(self, timeline_engine, config):
-        output_path = config.get("path")
-        if self.worker and self.worker.isRunning():
-            return False, "Render sedang berjalan"
+    def start_render_process(self, timeline, config, video_service):
+        if not timeline:
+            return False, "Timeline is None"
+        if not config.get("fps"):
+            return False, "Export Error: FPS is missing"
+        if not config.get("path"):
+            return False, "Export Error: Output path missing"
 
-        self.worker = RenderWorker(timeline_engine, output_path, config)
-        return True, self.worker
+        # SNAPSHOT TIMELINE (SECONDS, READ-ONLY)
+        snapshot = TimelineEngine()
+        if hasattr(timeline, "layers"):
+            for layer in timeline.layers:
+                snapshot.add_layer(copy.deepcopy(layer))
+
+        worker = RenderWorker(snapshot, config, video_service)
+        return True, worker

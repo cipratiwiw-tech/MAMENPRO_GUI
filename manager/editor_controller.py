@@ -278,7 +278,8 @@ class EditorController(QObject):
         self.sig_status_message.emit("⏳ Preparing Render...")
         self.preview_engine.pause()
         
-        success, worker_or_msg = self.render_service.start_render_process(self.timeline, config)
+        # Inject Shared Video Service
+        success, worker_or_msg = self.render_service.start_render_process(self.timeline, config, self.video_service)
         
         if success:
             worker = worker_or_msg
