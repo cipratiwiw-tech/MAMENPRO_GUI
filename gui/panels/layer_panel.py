@@ -6,9 +6,9 @@ from PySide6.QtGui import QBrush, QColor, QPen, QFont, QPainter, QWheelEvent
 import math
 
 # ==========================================
-# KONSTANTA TAMPILAN
+# KONSTANTA TAMPILAN (SLIM RULER VERSION)
 # ==========================================
-HEADER_HEIGHT = 45          
+HEADER_HEIGHT = 30          # LEBIH RAMPING (Sebelumnya 45)
 TRACK_HEADER_WIDTH = 120    
 RULER_BG = "#1e1e1e"
 SIDEBAR_BG = "#21252b"      
@@ -47,7 +47,7 @@ class TimelineClipItem(QGraphicsRectItem):
         self.text = QGraphicsTextItem(self.layer_name, self)
         self.text.setDefaultTextColor(QColor("white"))
         self.text.setFont(QFont("Segoe UI", 8))
-        self.text.setPos(5, 0)
+        self.text.setPos(5, 0) # Padding text dalam clip
 
         self._is_dragging = False
         self._drag_start_x = 0
@@ -67,7 +67,7 @@ class TimelineClipItem(QGraphicsRectItem):
         self.setRect(0, 0, width, height)
         self.setPos(x_pos, y_pos)
 
-        if t_height < 25:
+        if t_height < 20: # Sembunyikan text kalau track terlalu kecil
             self.text.setVisible(False)
         else:
             self.text.setVisible(True)
@@ -78,6 +78,7 @@ class TimelineClipItem(QGraphicsRectItem):
             self._is_dragging = True
             self._drag_start_x = event.scenePos().x()
             self._initial_pos_x = self.pos().x()
+            
             self.setOpacity(0.6) 
             self.setCursor(Qt.ClosedHandCursor)
             self.parent_view.sig_layer_selected.emit(self.layer_id)
@@ -85,16 +86,18 @@ class TimelineClipItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, event):
         if self._is_dragging:
-            current_x = event.scenePos().x()
-            delta = current_x - self._drag_start_x
-            new_x = max(TRACK_HEADER_WIDTH, self._initial_pos_x + delta)
+            current_mouse_x = event.scenePos().x()
+            delta = current_mouse_x - self._drag_start_x
             
-            self.setPos(new_x, self.y())
+            raw_new_x = max(TRACK_HEADER_WIDTH, self._initial_pos_x + delta)
             
-            real_pixel = new_x - TRACK_HEADER_WIDTH
-            new_time = real_pixel / self.parent_view.zoom_level
+            # SNAP TO FRAME LOGIC
+            raw_time = (raw_new_x - TRACK_HEADER_WIDTH) / self.parent_view.zoom_level
+            snapped_time = round(raw_time * FPS) / FPS
+            snapped_pixel_x = TRACK_HEADER_WIDTH + (snapped_time * self.parent_view.zoom_level)
             
-            self.setToolTip(f"Start: {self.parent_view.format_time_full(new_time)}")
+            self.setPos(snapped_pixel_x, self.y())
+            self.setToolTip(f"Start: {self.parent_view.format_time_full(snapped_time)}")
         else:
             super().mouseMoveEvent(event)
 
@@ -106,8 +109,6 @@ class TimelineClipItem(QGraphicsRectItem):
             
             final_pixel_x = self.pos().x()
             new_start_time = (final_pixel_x - TRACK_HEADER_WIDTH) / self.parent_view.zoom_level
-            
-            # Snap Clip Start ke Frame
             new_start_time = round(new_start_time * FPS) / FPS
             
             if abs(new_start_time - self.current_start_time) > 0.001:
@@ -157,8 +158,8 @@ class LayerPanel(QGraphicsView):
         self.min_track_height = 25
         self.max_track_height = 150
         
-        # State Scrubbing
-        self._is_scrubbing = False # Flag status scrubbing ruler
+        # Scrubbing Flag
+        self._is_scrubbing = False 
 
         self.clip_registry = {}
         self.last_layers_data = [] 
@@ -272,7 +273,7 @@ class LayerPanel(QGraphicsView):
         return f"{mm:02d}:{ss:02d}:{ff:02d}"
 
     # ==========================================
-    # RENDERING
+    # RENDERING BACKGROUND & FOREGROUND (SLIM RULER)
     # ==========================================
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
@@ -282,6 +283,7 @@ class LayerPanel(QGraphicsView):
         left, right = int(rect.left()), int(rect.right())
         th = self.track_height
         
+        # Track Background
         first_track_idx = max(0, (top - HEADER_HEIGHT) // th)
         current_y = HEADER_HEIGHT + (first_track_idx * th)
         
@@ -293,6 +295,7 @@ class LayerPanel(QGraphicsView):
             painter.drawLine(left, current_y, right, current_y)
             current_y += th
             
+        # Grid Vertical
         major_step, _, _ = self.get_ruler_settings()
         visible_start_x = max(TRACK_HEADER_WIDTH, left)
         start_t = int((visible_start_x - TRACK_HEADER_WIDTH) / self.zoom_level / major_step) * major_step
@@ -311,12 +314,12 @@ class LayerPanel(QGraphicsView):
         
         left, top, width = rect.left(), rect.top(), rect.width()
         
-        # Ruler BG
+        # --- RULER BG (SLIM) ---
         painter.fillRect(QRectF(left, top, width, HEADER_HEIGHT), QColor(RULER_BG))
         painter.setPen(QPen(QColor("#000"), 1))
         painter.drawLine(left, top + HEADER_HEIGHT, left + width, top + HEADER_HEIGHT)
 
-        # Ticks
+        # --- TICKS & TEXT (Compact Layout) ---
         major_step, ticks_per_major, fmt_type = self.get_ruler_settings()
         start_scene_x = max(TRACK_HEADER_WIDTH, left)
         start_idx = int((start_scene_x - TRACK_HEADER_WIDTH) / self.zoom_level / major_step)
@@ -332,14 +335,20 @@ class LayerPanel(QGraphicsView):
             if pos_x > end_scene_x: break
             
             if pos_x >= TRACK_HEADER_WIDTH:
+                # 1. Major Tick (Sedikit lebih pendek karena Header Height cuma 30px)
+                # Dari top+18 sampai bawah
                 painter.setPen(QPen(QColor("#ccc"), 1))
-                painter.drawLine(pos_x, top + 20, pos_x, top + HEADER_HEIGHT)
+                painter.drawLine(pos_x, top + 18, pos_x, top + HEADER_HEIGHT)
                 
+                # 2. Text Label (Digeser agak naik)
                 label = self.format_time_label(current_t, fmt_type)
                 tw = fm.horizontalAdvance(label)
                 label_x = max(TRACK_HEADER_WIDTH + 5, pos_x - tw/2)
-                painter.drawText(label_x, top + 15, label)
                 
+                # Posisi teks di y=top+13 (Baseline)
+                painter.drawText(label_x, top + 13, label)
+                
+                # 3. Minor Ticks
                 if ticks_per_major > 1:
                     minor_step_time = major_step / ticks_per_major
                     minor_step_px = minor_step_time * self.zoom_level
@@ -347,15 +356,21 @@ class LayerPanel(QGraphicsView):
                     for i in range(1, ticks_per_major):
                         sub_x = pos_x + (i * minor_step_px)
                         if sub_x > end_scene_x: break
-                        tick_top = top + 28 if i == ticks_per_major/2 else top + 32
-                        painter.drawLine(sub_x, tick_top, sub_x, top + HEADER_HEIGHT)
+                        
+                        # Garis minor lebih pendek lagi
+                        tick_start = top + 24
+                        if i == ticks_per_major / 2: tick_start = top + 20 # Tengah agak panjang
+                        
+                        painter.drawLine(sub_x, tick_start, sub_x, top + HEADER_HEIGHT)
+                        
             current_t += major_step
 
-        # Sidebar & Tracks
+        # --- SIDEBAR HEADER ---
         painter.fillRect(QRectF(left, top + HEADER_HEIGHT, TRACK_HEADER_WIDTH, rect.height()), QColor(SIDEBAR_BG))
         painter.setPen(QPen(QColor("#000"), 1))
         painter.drawLine(left + TRACK_HEADER_WIDTH, top, left + TRACK_HEADER_WIDTH, rect.bottom())
         
+        # Track Names
         first_track_idx = max(0, (int(top) - HEADER_HEIGHT) // self.track_height)
         count = int(rect.height() // self.track_height) + 2
         painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
@@ -367,7 +382,7 @@ class LayerPanel(QGraphicsView):
             painter.drawLine(left, ty + self.track_height, left + TRACK_HEADER_WIDTH, ty + self.track_height)
             painter.setPen(QColor("#ccc"))
 
-        # Corner Box
+        # --- CORNER BOX ---
         painter.fillRect(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT), QColor("#181818"))
         painter.setPen(QColor("#666"))
         painter.drawText(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT), Qt.AlignCenter, "TIMELINE")
@@ -375,7 +390,7 @@ class LayerPanel(QGraphicsView):
         painter.drawRect(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT))
 
     # ==========================================
-    # HELPERS & INTERACTION (SCRUBBING)
+    # HELPERS & INTERACTION
     # ==========================================
     def sync_all_layers(self, layers: list):
         self.last_layers_data = layers
@@ -397,7 +412,6 @@ class LayerPanel(QGraphicsView):
              self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + 50)
 
     def _process_seek_event(self, scene_x):
-        """Helper untuk hitung seek + snapping"""
         raw_t = max(0, (scene_x - TRACK_HEADER_WIDTH) / self.zoom_level)
         snapped_t = round(raw_t * FPS) / FPS
         self.sig_request_seek.emit(snapped_t)
@@ -407,19 +421,16 @@ class LayerPanel(QGraphicsView):
         sp = self.mapToScene(event.pos())
         top_vis = self.mapToScene(0, 0).y()
         
-        # Cek jika klik di area RULER (Top Bar)
         if sp.y() < (top_vis + HEADER_HEIGHT) and sp.x() > TRACK_HEADER_WIDTH:
-            self._is_scrubbing = True # Mulai Scrubbing
+            self._is_scrubbing = True 
             self._process_seek_event(sp.x())
-            event.accept() # Jangan diteruskan ke bawah
+            event.accept() 
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        # Jika sedang scrubbing ruler, update posisi terus menerus
         if self._is_scrubbing:
             sp = self.mapToScene(event.pos())
-            # Batasi agar tidak scrub ke kiri header
             safe_x = max(TRACK_HEADER_WIDTH, sp.x())
             self._process_seek_event(safe_x)
             event.accept()
@@ -427,7 +438,6 @@ class LayerPanel(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        # Selesai Scrubbing
         if self._is_scrubbing:
             self._is_scrubbing = False
             event.accept()
