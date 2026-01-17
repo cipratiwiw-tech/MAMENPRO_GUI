@@ -8,7 +8,7 @@ from .sections.appearance_section import AppearanceSection
 from .sections.timing_section import TimingSection
 from .sections.audio_section import AudioSection
 from .sections.text_section import TextSection
-from .sections.color_section import ColorSection # <--- BARU
+from .sections.color_section import ColorSection
 
 class StateAdapter:
     @staticmethod
@@ -56,7 +56,7 @@ class StateAdapter:
                 "shadow_x": flat_props.get("shadow_x", 5),
                 "shadow_y": flat_props.get("shadow_y", 5),
             },
-            "color": { # <--- BARU (Color Grading)
+            "color": {
                 "brightness": flat_props.get("brightness", 0),
                 "contrast": flat_props.get("contrast", 0),
                 "exposure": flat_props.get("exposure", 0),
@@ -64,7 +64,7 @@ class StateAdapter:
                 "hue": flat_props.get("hue", 0),
                 "temperature": flat_props.get("temperature", 0),
             },
-            "effect": { # <--- BARU (FX)
+            "effect": {
                 "blur": flat_props.get("blur", 0),
                 "vignette": flat_props.get("vignette", 0),
             }
@@ -80,36 +80,16 @@ class StateAdapter:
             "appearance.opacity": "opacity", "appearance.blend_mode": "blend_mode",
             "timing.start_time": "start_time", "timing.duration": "duration", "timing.speed": "speed",
             "audio.volume": "volume", "audio.mute": "mute",
-            
-            # TEXT
-            "text.content": "text_content",
-            "text.font_family": "font_family",
-            "text.font_size": "font_size",
-            "text.color": "text_color",
-            "text.weight": "text_weight",
-            "text.italic": "text_italic",
-            "text.wrap": "text_wrap",
-            "text.align": "text_align",
-            "text.line_height": "line_height",
-            "text.letter_spacing": "letter_spacing",
-            "text.stroke_enabled": "stroke_enabled",
-            "text.stroke_color": "stroke_color",
-            "text.stroke_width": "stroke_width",
-            "text.shadow_enabled": "shadow_enabled",
-            "text.shadow_color": "shadow_color",
-            "text.shadow_blur": "shadow_blur",
-            "text.shadow_x": "shadow_x",
-            "text.shadow_y": "shadow_y",
-            
-            # COLOR & FX <--- BARU
-            "color.brightness": "brightness",
-            "color.contrast": "contrast",
-            "color.exposure": "exposure",
-            "color.saturation": "saturation",
-            "color.hue": "hue",
-            "color.temperature": "temperature",
-            "effect.blur": "blur",
-            "effect.vignette": "vignette",
+            "text.content": "text_content", "text.font_family": "font_family", "text.font_size": "font_size",
+            "text.color": "text_color", "text.weight": "text_weight", "text.italic": "text_italic",
+            "text.wrap": "text_wrap", "text.align": "text_align", "text.line_height": "line_height",
+            "text.letter_spacing": "letter_spacing", "text.stroke_enabled": "stroke_enabled",
+            "text.stroke_color": "stroke_color", "text.stroke_width": "stroke_width",
+            "text.shadow_enabled": "shadow_enabled", "text.shadow_color": "shadow_color",
+            "text.shadow_blur": "shadow_blur", "text.shadow_x": "shadow_x", "text.shadow_y": "shadow_y",
+            "color.brightness": "brightness", "color.contrast": "contrast", "color.exposure": "exposure",
+            "color.saturation": "saturation", "color.hue": "hue", "color.temperature": "temperature",
+            "effect.blur": "blur", "effect.vignette": "vignette",
         }
         if path in map_table:
             return {map_table[path]: value}
@@ -118,6 +98,9 @@ class StateAdapter:
 class SettingPanel(QWidget):
     sig_property_changed = Signal(str, object) 
     sig_property_update = Signal(dict)
+    
+    # NEW: Signal Keyframe (path, active)
+    sig_keyframe_changed = Signal(str, bool)
 
     def __init__(self, parent=None):
         print("[PANEL] Initializing SettingPanel...")
@@ -152,14 +135,14 @@ class SettingPanel(QWidget):
         
         self.sec_transform = TransformSection()
         self.sec_text = TextSection()
-        self.sec_color = ColorSection() # <--- BARU
+        self.sec_color = ColorSection()
         self.sec_appearance = AppearanceSection()
         self.sec_timing = TimingSection()
         self.sec_audio = AudioSection()
         
         self._register_section(self.sec_transform)
         self._register_section(self.sec_text)
-        self._register_section(self.sec_color) # <--- BARU
+        self._register_section(self.sec_color)
         self._register_section(self.sec_appearance)
         self._register_section(self.sec_timing)
         self._register_section(self.sec_audio)
@@ -168,14 +151,23 @@ class SettingPanel(QWidget):
         self.container_layout.addWidget(section)
         self.sections.append(section)
         section.hide()
+        
+        # Connect Signals
         section.sig_edit_changed.connect(self._on_section_change)
+        
+        # [NEW] Connect Keyframe Signal
+        section.sig_keyframe_toggled.connect(self._on_keyframe_toggled)
 
     def _on_section_change(self, path, value):
-        print(f"[PANEL] Signal Emit: {path} = {value}")
+        print(f"[PANEL] Prop Change: {path} = {value}")
         self.sig_property_changed.emit(path, value)
         legacy_payload = StateAdapter.to_legacy_update(path, value)
         if legacy_payload:
             self.sig_property_update.emit(legacy_payload)
+            
+    def _on_keyframe_toggled(self, path, active):
+        print(f"[PANEL] 🗝️ Keyframe Toggle: {path} -> {active}")
+        self.sig_keyframe_changed.emit(path, active)
 
     def set_values(self, layer_data):
         if not layer_data:
@@ -193,15 +185,14 @@ class SettingPanel(QWidget):
             priority_order = [
                 self.sec_text,
                 self.sec_appearance,
-                self.sec_color, # Color juga bisa untuk teks (fill/gradient future)
+                self.sec_color,
                 self.sec_timing,
                 self.sec_audio
             ]
         else:
-            # Video/Image Priority
             priority_order = [
                 self.sec_transform,
-                self.sec_color, # Color Section Penting untuk Video
+                self.sec_color,
                 self.sec_appearance,
                 self.sec_timing,
                 self.sec_audio,
@@ -218,8 +209,6 @@ class SettingPanel(QWidget):
         vis_appear = l_type in ['video', 'image', 'text', 'shape']
         self.sec_appearance.setVisible(vis_appear)
         
-        # Color Section: Video & Image (Wajib), Text (Opsional, tapi biasanya teks punya panel sendiri)
-        # Kita aktifkan untuk Video & Image saja dulu agar fokus
         vis_color = l_type in ['video', 'image'] 
         self.sec_color.setVisible(vis_color)
         
