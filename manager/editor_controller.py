@@ -3,19 +3,19 @@ from PySide6.QtCore import QObject, Signal
 from manager.project_state import ProjectState, LayerData
 import uuid
 
-# IMPORT PEKERJA (SERVICE)
+# SERVICES
 from manager.services.template_service import TemplateService
 from manager.services.render_service import RenderService
+from manager.services.project_io_service import ProjectIOService # [BARU]
 
 class EditorController(QObject):
-    # Signals
+    # Signals (Tetap sama)
     sig_layer_created = Signal(object)
     sig_layer_removed = Signal(str)
+    sig_layer_cleared = Signal() # [BARU] Signal untuk reset canvas saat load new project
     sig_property_changed = Signal(str, dict)
     sig_selection_changed = Signal(object)
-    
-    # Signal System (Notifikasi ke UI)
-    sig_status_message = Signal(str) 
+    sig_status_message = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -24,6 +24,7 @@ class EditorController(QObject):
         # REKRUT PEKERJA
         self.tpl_service = TemplateService()
         self.render_service = RenderService()
+        self.io_service = ProjectIOService() # [BARU]
 
     # --- BAGIAN 1: LAYER CRUD (Logic Inti) ---
     def add_new_layer(self, layer_type, path=None):
@@ -81,6 +82,37 @@ class EditorController(QObject):
         self.render_service.start_render_process(self.state, render_config)
         self.sig_status_message.emit("✅ Render Started...")
 
+    # --- PROJECT IO (DELEGATION) ---
+    def save_project(self, file_path: str):
+        if not file_path: return
+        
+        self.sig_status_message.emit("Saving project...")
+        success = self.io_service.save_project(self.state, file_path)
+        
+        if success:
+            self.sig_status_message.emit(f"✅ Project saved: {file_path}")
+        else:
+            self.sig_status_message.emit("❌ Failed to save project!")
+
+    def load_project(self, file_path: str):
+        if not file_path: return
+        
+        self.sig_status_message.emit("Loading project...")
+        new_layers = self.io_service.load_project(file_path)
+        
+        if new_layers:
+            # 1. Bersihkan State Lama
+            self.state.layers.clear()
+            self.sig_layer_cleared.emit() # UI harus dengar ini untuk clear visual
+            
+            # 2. Masukkan Data Baru
+            for layer in new_layers:
+                self._insert_layer(layer) # Reuse method internal
+                
+            self.sig_status_message.emit(f"✅ Project loaded: {len(new_layers)} layers")
+        else:
+            self.sig_status_message.emit("❌ Failed to load project or empty.")
+            
     # Helper Internal
     def _insert_layer(self, layer):
         self.state.add_layer(layer)

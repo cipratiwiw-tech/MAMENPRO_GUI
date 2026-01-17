@@ -1,5 +1,6 @@
 # manager/editor_binder.py
 from PySide6.QtCore import QObject
+from PySide6.QtWidgets import QFileDialog # Boleh di Binder untuk dialog menu utama, atau pakai Service
 
 class EditorBinder(QObject):
     def __init__(self, controller, main_window):
@@ -11,32 +12,54 @@ class EditorBinder(QObject):
         self._connect_ui_to_logic()
 
     def _connect_logic_to_ui(self):
-        # ... (Koneksi sebelumnya tetap ada: layer created, removed, prop changed) ...
+        # ... (Koneksi lama layer_created, dll TETAP SAMA) ...
         self.c.sig_layer_created.connect(self._on_layer_created)
         self.c.sig_layer_removed.connect(self._on_layer_removed)
         self.c.sig_property_changed.connect(self._on_property_changed)
         self.c.sig_selection_changed.connect(self._on_selection_changed)
         
-        # [BARU] Status Message (misal untuk Toast/Log di UI)
-        self.c.sig_status_message.connect(lambda msg: print(f"[UI NOTIFY]: {msg}"))
+        # [BARU] Clear Canvas saat Load Project
+        self.c.sig_layer_cleared.connect(self._on_layer_cleared)
+
+        # [UPDATE] Status Message -> Real UI Status Bar
+        self.c.sig_status_message.connect(self.ui.status_bar.showMessage)
 
     def _connect_ui_to_logic(self):
-        # ... (Koneksi sebelumnya tetap ada: media, layer, setting, text panel) ...
+        # ... (Koneksi panel lama TETAP SAMA) ...
         self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
         self.ui.layer_panel.sig_request_add.connect(self.c.add_new_layer)
         self.ui.layer_panel.sig_request_delete.connect(self.c.delete_current_layer)
         self.ui.layer_panel.sig_layer_selected.connect(self.c.select_layer)
         self.ui.setting_panel.sig_property_changed.connect(self.c.update_layer_property)
         self.ui.text_panel.sig_property_changed.connect(self.c.update_layer_property)
-        
-        # [BARU] WIRING UNTUK TAB BARU
-        # Template Tab -> Controller Delegate
         self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
-        
-        # Render Tab -> Controller Delegate
         self.ui.render_tab.sig_request_render.connect(self.c.process_render)
 
-    # ... (Glue methods: _on_layer_created, dll tetap sama) ...
+        # [BARU] Menu Bar Actions
+        self.ui.action_save.triggered.connect(self._on_menu_save)
+        self.ui.action_open.triggered.connect(self._on_menu_open)
+
+    # --- ACTION HANDLERS (GLUE) ---
+
+    def _on_menu_save(self):
+        # UX Decision: Buka dialog di sini (atau pakai service), lalu lempar path ke Controller
+        path, _ = QFileDialog.getSaveFileName(self.ui, "Save Project", "my_project.json", "JSON (*.json)")
+        if path:
+            self.c.save_project(path)
+
+    def _on_menu_open(self):
+        path, _ = QFileDialog.getOpenFileName(self.ui, "Open Project", "", "JSON (*.json)")
+        if path:
+            self.c.load_project(path)
+
+    def _on_layer_cleared(self):
+        # Bersihkan visual list dan canvas
+        self.ui.layer_panel.list_widget.clear()
+        self.ui.layer_panel._id_map.clear()
+        self.ui.preview_panel.scene.clear()
+        self.ui.preview_panel.visual_registry.clear()
+        
+    # ... (Glue methods lain _on_layer_created dll TETAP SAMA) ...
     def _on_layer_created(self, layer_data):
         self.ui.layer_panel.add_item_visual(layer_data.id, layer_data.name)
         self.ui.preview_panel.on_layer_created(layer_data)
@@ -56,7 +79,6 @@ class EditorBinder(QObject):
             self.ui.preview_panel.on_selection_changed(layer_data)
             self.ui.setting_panel.update_form_visual(layer_data.properties)
             self.ui.text_panel.set_values(layer_data.properties)
-            # UX: Auto switch tab
             if layer_data.type == 'text':
                 self.ui.right_tabs.setCurrentWidget(self.ui.text_panel)
             else:
