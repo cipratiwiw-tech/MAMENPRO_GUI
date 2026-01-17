@@ -3,25 +3,28 @@ import sys
 import os
 from PySide6.QtWidgets import QApplication
 
-# Tambahkan path root agar modul ketemu
+# 1. Setup Path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# 2. Import Modules
 from manager.editor_controller import EditorController
 from gui.main_window import VideoEditorApp
-from manager.editor_binder import EditorBinder # <--- WAJIB ADA
+from manager.editor_binder import EditorBinder
+from gui.styles import AppTheme  # Import Theme
 
 if __name__ == "__main__":
+    # 3. Init App
     app = QApplication(sys.argv)
+    app.setStyle("Fusion") # Base style Qt yang netral
     
-    # 1. Otak
+    # 4. Apply Custom Theme
+    app.setStyleSheet(AppTheme.get_stylesheet())
+    
+    # 5. Build Architecture
     controller = EditorController()
-    
-    # 2. Tampilan (Tanpa Controller)
     window = VideoEditorApp()
-    
-    # 3. Kabel Penghubung (Binder)
-    # Ini yang akan memperbaiki logika aplikasi agar tombol berfungsi
     binder = EditorBinder(controller, window)
     
+    # 6. Launch
     window.show()
     sys.exit(app.exec())

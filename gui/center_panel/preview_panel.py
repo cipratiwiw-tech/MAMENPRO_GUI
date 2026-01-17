@@ -30,26 +30,18 @@ class PreviewPanel(QGraphicsView):
     # --- SLOTS: REAKSI TERHADAP BINDER (LOGIC -> VIEW) ---
     
     def on_layer_created(self, layer_data):
-        """Membuat item visual sesuai tipe layer"""
         item = None
-        
-        # Factory Logic sederhana
         if layer_data.type == 'text':
             item = TextItem(layer_data.id, layer_data.properties.get('text_content', 'Text'))
         else:
-            # Video / Image
             item = VideoItem(layer_data.id, layer_data.path)
             
         if item:
-            # Set properti awal
-            item.update_properties(layer_data.properties)
+            # PASS Z-INDEX DISINI
+            item.update_properties(layer_data.properties, layer_data.z_index)
             
-            # Add ke scene
             self.scene.addItem(item)
             self.visual_registry[layer_data.id] = item
-            
-            # Agar saat diklik, PreviewPanel bisa lapor ke Binder (Seleksi Visual)
-            # (Logic klik ada di event handler scene/view atau item itu sendiri)
 
     def on_layer_removed(self, layer_id):
         if layer_id in self.visual_registry:
@@ -59,8 +51,19 @@ class PreviewPanel(QGraphicsView):
 
     def on_property_changed(self, layer_id, props):
         if layer_id in self.visual_registry:
-            # Delegasikan update ke masing-masing item
-            self.visual_registry[layer_id].update_properties(props)
+            # Karena props adalah partial dict, kita tidak selalu punya z_index.
+            # Idealnya Binder mengirim full object atau Z-index terpisah.
+            # TAPI untuk simplifikasi, kita update properti visual saja.
+            # Jika Z-index berubah (via Reorder), kita butuh method khusus 'on_layer_reordered'.
+            
+            # Untuk sekarang, kita panggil update_properties tanpa mengubah z_index default (0)
+            # KECUALI jika props mengandung 'z_index' (dari controller)
+            
+            item = self.visual_registry[layer_id]
+            current_z = item.zValue()
+            new_z = props.get("z_index", current_z) # Pakai yg baru jika ada
+            
+            item.update_properties(props, new_z)
             self.scene.update()
 
     def on_selection_changed(self, layer_data):
