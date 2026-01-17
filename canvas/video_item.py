@@ -1,15 +1,13 @@
 # canvas/video_item.py
-from PySide6.QtCore import QObject, Signal, Qt
+from PySide6.QtCore import QObject, Signal, Qt, QPointF
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsItem
 from PySide6.QtGui import QPixmap, QColor, QPen
 
-# Import Gizmo Baru
+# Import Gizmo
 try:
     from gui.center_panel.canvas_items.transform_gizmo import TransformGizmo
 except ImportError:
-    # Fallback agar tidak crash jika file gizmo belum ada/salah nama
     TransformGizmo = None
-    print("⚠️ TransformGizmo not found/imported")
 
 class VideoLayerItem(QObject, QGraphicsPixmapItem): 
     sig_transform_changed = Signal(str, dict)
@@ -18,9 +16,7 @@ class VideoLayerItem(QObject, QGraphicsPixmapItem):
         QObject.__init__(self)
         QGraphicsPixmapItem.__init__(self, parent)
         
-        # 🔥 FIX: DEFINISIKAN GIZMO DI AWAL SEBELUM METHOD LAIN DIPANGGIL 🔥
         self.gizmo = None
-        
         self.setTransformationMode(Qt.SmoothTransformation)
         
         self.layer_id = layer_id
@@ -33,12 +29,11 @@ class VideoLayerItem(QObject, QGraphicsPixmapItem):
         self.setFlags(
             QGraphicsItem.ItemIsMovable |
             QGraphicsItem.ItemIsSelectable |
-            QGraphicsItem.ItemSendsGeometryChanges
+            QGraphicsItem.ItemSendsGeometryChanges 
         )
         
+        # PENTING: Origin point di tengah agar rotasi porosnya benar
         self.setTransformOriginPoint(self.boundingRect().center())
-        
-        # Sekarang aman dipanggil karena self.gizmo sudah ada (None)
         self._set_placeholder()
 
     def _set_placeholder(self):
@@ -50,9 +45,89 @@ class VideoLayerItem(QObject, QGraphicsPixmapItem):
     def _update_origin(self):
         rect = self.boundingRect()
         self.setTransformOriginPoint(rect.center())
-        # Update layout gizmo jika ukuran gambar berubah
         if self.gizmo:
             self.gizmo._update_layout()
+
+    # --- 🔥 LOGIKA SNAP BARU (CENTER ANCHOR) 🔥 ---
+    
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene():
+            new_pos = QPointF(value) # Posisi Top-Left calon (sebelum diterapkan)
+            parent = self.parentItem()
+            
+            if parent and hasattr(parent, 'show_guide_vertical'):
+                # 1. Ambil Ukuran Clip (dikali scale)
+                rect = self.boundingRect()
+                current_scale = self.scale()
+                
+                # Ukuran real clip di layar
+                clip_w = rect.width() * current_scale
+                clip_h = rect.height() * current_scale
+                
+                # 2. Hitung Titik Tengah Calon Clip (Anchor Point)
+                # new_pos adalah sudut kiri atas. Jadi Center = TopLeft + 1/2 Ukuran
+                clip_center_x = new_pos.x() + (clip_w / 2)
+                clip_center_y = new_pos.y() + (clip_h / 2)
+                
+                # 3. Ambil Titik Tengah Canvas (Anchor Point)
+                canvas_rect = parent.rect()
+                canvas_center_x = canvas_rect.width() / 2
+                canvas_center_y = canvas_rect.height() / 2
+                
+                # 4. Cek Jarak Snap (Threshold 25px agar terasa "menggigit")
+                SNAP_DIST = 25.0
+                
+                is_snapped_x = False
+                is_snapped_y = False
+                
+                # --- LOGIKA X (Vertikal Snap) ---
+                if abs(clip_center_x - canvas_center_x) < SNAP_DIST:
+                    # RUMUS KUNCI: Posisi Baru = Pusat Canvas - Setengah Clip
+                    target_x = canvas_center_x - (clip_w / 2)
+                    new_pos.setX(target_x)
+                    is_snapped_x = True
+                
+                # --- LOGIKA Y (Horizontal Snap) ---
+                if abs(clip_center_y - canvas_center_y) < SNAP_DIST:
+                    target_y = canvas_center_y - (clip_h / 2)
+                    new_pos.setY(target_y)
+                    is_snapped_y = True
+                
+                # 5. Nyalakan/Matikan Garis Bantu
+                parent.show_guide_vertical(is_snapped_x)
+                parent.show_guide_horizontal(is_snapped_y)
+
+            return new_pos
+
+        # Matikan guide saat seleksi dilepas/berubah
+        if change == QGraphicsItem.ItemSelectedChange:
+            is_selected = bool(value)
+            if is_selected:
+                if not self.gizmo and TransformGizmo:
+                    self.gizmo = TransformGizmo(self)
+            else:
+                if self.gizmo:
+                    self.scene().removeItem(self.gizmo)
+                    self.gizmo = None
+                
+                # Pastikan guide mati saat deselect
+                parent = self.parentItem()
+                if parent and hasattr(parent, 'show_guide_vertical'):
+                    parent.show_guide_vertical(False)
+                    parent.show_guide_horizontal(False)
+
+        return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        
+        # Bersihkan guide setelah drag selesai
+        parent = self.parentItem()
+        if parent and hasattr(parent, 'show_guide_vertical'):
+            parent.show_guide_vertical(False)
+            parent.show_guide_horizontal(False)
+            
+        self._emit_changes()
 
     def sync_frame(self, t, video_service):
         if not video_service: return
@@ -68,31 +143,7 @@ class VideoLayerItem(QObject, QGraphicsPixmapItem):
         if "scale" in props: self.setScale(props["scale"] / 100.0)
         if "opacity" in props: self.setOpacity(props["opacity"])
 
-    # --- ITEM CHANGE EVENT (AUTO SHOW/HIDE GIZMO) ---
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemSelectedChange:
-            is_selected = bool(value)
-            if is_selected:
-                # Jika terpilih, buat Gizmo
-                if not self.gizmo and TransformGizmo:
-                    self.gizmo = TransformGizmo(self)
-            else:
-                # Jika tidak terpilih, hapus Gizmo
-                if self.gizmo:
-                    if self.scene():
-                        self.scene().removeItem(self.gizmo)
-                    self.gizmo = None
-                    
-        return super().itemChange(change, value)
-
-    # --- SAVE LOGIC ---
-
     def notify_transform_change(self):
-        """Dipanggil oleh Gizmo saat selesai drag"""
-        self._emit_changes()
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
         self._emit_changes()
 
     def _emit_changes(self):
@@ -105,5 +156,4 @@ class VideoLayerItem(QObject, QGraphicsPixmapItem):
         self.sig_transform_changed.emit(self.layer_id, final_props)
 
     def paint(self, painter, option, widget):
-        # Render gambar seperti biasa
         super().paint(painter, option, widget)
