@@ -29,3 +29,14 @@ class MediaDialogService:
             "Video MP4 (*.mp4)"
         )
         return path
+    
+    @staticmethod
+    def get_audio_file(parent_widget):
+        """[BARU] Dialog khusus Audio"""
+        path, _ = QFileDialog.getOpenFileName(
+            parent_widget, 
+            "Import Audio", 
+            "", 
+            "Audio Files (*.mp3 *.wav *.aac *.m4a)"
+        )
+        return path

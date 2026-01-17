@@ -44,6 +44,13 @@ class EditorBinder(QObject):
         
         # [BARU] Request dari LayerPanel
         self.ui.layer_panel.sig_request_reorder.connect(self.c.reorder_layers)
+        
+        # [BARU] Audio Tab -> Controller
+        self.ui.audio_tab.sig_request_add_audio.connect(self.c.add_audio_layer)
+        
+        # [BARU] Chroma Panel -> Controller
+        self.ui.chroma_panel.sig_apply_chroma.connect(self.c.apply_chroma_config)
+        self.ui.chroma_panel.sig_remove_chroma.connect(self.c.remove_chroma_config)
 
     # --- ACTION HANDLERS (GLUE) ---
 

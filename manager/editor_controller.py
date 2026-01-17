@@ -56,7 +56,6 @@ class EditorController(QObject):
             self.select_layer(None)
 
     # --- BAGIAN 2: DELEGASI TUGAS (Pakai Service) ---
-
     def apply_template(self, template_id: str):
         """DELEGATOR: Minta service buatkan layer, lalu Controller masukkan ke state."""
         print(f"[CONTROLLER] Delegating template creation: {template_id}")
@@ -149,3 +148,45 @@ class EditorController(QObject):
         
         # 4. Opsional: Reselect item yang dipindah
         self.select_layer(layer.id)
+        
+    # --- AUDIO LOGIC ---
+    def add_audio_layer(self, path: str):
+        """Logic: Menambah layer tipe 'audio'."""
+        print(f"[CONTROLLER] Adding audio: {path}")
+        # Audio biasanya tidak butuh Z-Index visual, tapi tetap masuk list layer
+        # atau bisa dipisah ke list 'audio_tracks' di state jika mau multi-track audio.
+        # Untuk simplifikasi arsitektur ini, kita anggap audio adalah layer tipe 'audio'.
+        
+        self.add_new_layer("audio", path)
+
+    # --- CHROMA LOGIC ---
+    def apply_chroma_config(self, color_hex: str, threshold: float):
+        """
+        Logic: Update properties layer yang sedang dipilih.
+        Controller TIDAK melakukan filtering gambar. Cuma simpan config.
+        """
+        current_id = self.state.selected_layer_id
+        if not current_id: 
+            self.sig_status_message.emit("⚠️ Select a layer first!")
+            return
+
+        layer = self.state.get_layer(current_id)
+        if layer:
+            # Update Data State
+            updates = {
+                "chroma_active": True,
+                "chroma_color": color_hex,
+                "chroma_threshold": threshold
+            }
+            layer.properties.update(updates)
+            
+            # Kabari UI (Property Changed) -> Preview mungkin perlu simulasi simple atau abaikan
+            self.sig_property_changed.emit(current_id, updates)
+            self.sig_status_message.emit(f"✅ Chroma applied: {color_hex}")
+
+    def remove_chroma_config(self):
+        current_id = self.state.selected_layer_id
+        if current_id:
+            updates = {"chroma_active": False}
+            self.update_layer_property(updates)
+            self.sig_status_message.emit("🚫 Chroma removed")

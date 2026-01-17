@@ -12,6 +12,8 @@ from gui.right_panel.setting_panel import SettingPanel
 from gui.panels.text_panel import TextPanel
 from gui.left_panel.render_tab import RenderTab
 from gui.left_panel.template_tab import TemplateTab
+from gui.left_panel.audio_tab import AudioTab
+from gui.left_panel.presetchroma_panel import PresetChromaPanel
 
 class VideoEditorApp(QMainWindow):
     def __init__(self):
@@ -28,6 +30,8 @@ class VideoEditorApp(QMainWindow):
         
         self.setting_panel = SettingPanel()
         self.text_panel = TextPanel()
+        self.audio_tab = AudioTab()
+        self.chroma_panel = PresetChromaPanel()
         
         # [BARU] Status Bar
         self.status_bar = QStatusBar()
@@ -47,6 +51,8 @@ class VideoEditorApp(QMainWindow):
         left_tabs.addTab(self.layer_panel, "Layers")
         left_tabs.addTab(self.media_panel, "Media")
         left_tabs.addTab(self.template_tab, "Templates")
+        left_tabs.addTab(self.audio_tab, "Audio")       # [BARU]
+        left_tabs.addTab(self.chroma_panel, "Chroma")   # [BARU]
         left_tabs.addTab(self.render_tab, "Export")
         main_splitter.addWidget(left_tabs)
         
