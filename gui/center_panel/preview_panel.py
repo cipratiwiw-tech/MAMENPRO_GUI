@@ -348,10 +348,17 @@ class PreviewPanel(QWidget):
         self.scene.blockSignals(False)
     
     def _on_internal_selection(self):
-        items = self.scene.selectedItems()
-        if items:
-            item = items[0]
-            if hasattr(item, 'layer_id'):
-                self.sig_layer_selected.emit(item.layer_id)
-        else:
-            self.sig_layer_selected.emit(None)
+        try:
+            # Cek validitas scene dan pointer C++
+            if not self.scene: return
+            
+            items = self.scene.selectedItems()
+            if items:
+                item = items[0]
+                if hasattr(item, 'layer_id'):
+                    self.sig_layer_selected.emit(item.layer_id)
+            else:
+                self.sig_layer_selected.emit(None)
+        except RuntimeError:
+            # Tangkap error "Internal C++ object already deleted"
+            pass

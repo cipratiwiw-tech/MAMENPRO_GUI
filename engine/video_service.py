@@ -1,152 +1,163 @@
 # engine/video_service.py
 import cv2
-import os
+import numpy as np
 from PySide6.QtGui import QPixmap, QImage, QColor
 from engine.frame_cache import FrameCache
 
 class VideoService:
-    """
-    Source provider untuk preview & render.
-    - Video  : time-based (seconds → frame index via FPS metadata)
-    - Image  : static frame (cached sekali)
-    """
-
     def __init__(self):
-        # path -> cv2.VideoCapture
-        self._readers = {}
-        # layer_id -> QImage (static image)
-        self._image_cache = {}
-        # layer_id -> path
-        self._id_map = {}
-        
-        # Cache Frame Video (simpan 100 frame terakhir di RAM)
+        self._readers = {}     
+        self._image_cache = {} 
+        self._id_map = {}      
         self._video_frame_cache = FrameCache(max_frames=100)
 
     # ---------- REGISTRATION ----------
-
     def register_source(self, layer_id: str, path: str):
-        if not path:
-            return
-
+        if not path: return
         self._id_map[layer_id] = path
-        ext = os.path.splitext(path)[1].lower()
-
-        if ext in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]:
+        ext = path.split('.')[-1].lower()
+        if ext in ["jpg", "jpeg", "png", "bmp", "webp"]:
             img = cv2.imread(path)
             if img is not None:
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                h, w, ch = img.shape
-                qimg = QImage(
-                    img.data, w, h, ch * w, QImage.Format_RGB888
-                ).copy()
-                self._image_cache[layer_id] = qimg
+                self._image_cache[layer_id] = img 
         else:
             self._get_reader(path)
 
     def unregister_source(self, layer_id: str):
-        if layer_id in self._image_cache:
-            del self._image_cache[layer_id]
-        if layer_id in self._id_map:
-            del self._id_map[layer_id]
+        if layer_id in self._image_cache: del self._image_cache[layer_id]
+        if layer_id in self._id_map: del self._id_map[layer_id]
 
-    # ---------- PREVIEW API ----------
-
-    def get_preview_frame(self, layer_id: str, local_time: float) -> QPixmap:
-        if layer_id in self._image_cache:
-            return QPixmap.fromImage(self._image_cache[layer_id])
-
+    # ---------- API ----------
+    # [FIX] Render Engine butuh method ini
+    def get_frame(self, layer_id: str, time: float, props: dict = None) -> QImage:
         path = self._id_map.get(layer_id)
-        if not path:
-            return self._blank()
+        if not path: return QImage()
 
-        img = self._get_image_by_time(path, local_time)
-        if img.isNull():
-            return self._blank()
-        return QPixmap.fromImage(img)
+        # 1. Raw Frame
+        raw_frame = self._get_raw_frame(layer_id, path, time)
+        if raw_frame is None: return QImage()
 
-    # ---------- RENDER / COMPOSITOR API ----------
+        # 2. Effects
+        try:
+            if props:
+                processed_frame = self._apply_effects(raw_frame, props)
+            else:
+                processed_frame = raw_frame
+        except Exception:
+            processed_frame = raw_frame
 
-    def get_frame_image(self, path: str, local_time: float) -> QImage:
-        # [FIX] Guard clause: Jangan proses jika path kosong
-        if not path:
-            return QImage()
-        return self._get_image_by_time(path, local_time)
+        # 3. Convert
+        return self._cv2_to_qimage(processed_frame)
+
+    # Legacy support (jika ada komponen lama yang manggil ini)
+    def get_frame_image(self, path: str, time: float) -> QImage:
+        # Cari layer_id dari path (agak lambat tapi safe)
+        found_id = None
+        for lid, p in self._id_map.items():
+            if p == path:
+                found_id = lid
+                break
+        
+        if found_id:
+            return self.get_frame(found_id, time)
+        return QImage() # Fail safe
 
     # ---------- INTERNAL ----------
+    def _get_raw_frame(self, layer_id: str, path: str, time: float):
+        if layer_id in self._image_cache:
+            return self._image_cache[layer_id]
 
-    def _get_image_by_time(self, path: str, time_sec: float) -> QImage:
-        # [FIX] Guard clause tambahan
-        if not path:
-            return QImage()
+        cached = self._video_frame_cache.get(time)
+        if cached is not None:
+            return cached
 
-        # A. Cek Image Static Layer
-        for lid, p in self._id_map.items():
-            if p == path and lid in self._image_cache:
-                return self._image_cache[lid]
-
-        # B. Cek Cache Video di RAM
-        cached_frame = self._video_frame_cache.get(time_sec)
-        if cached_frame:
-            return cached_frame
-
-        # C. Jika tidak ada di cache, baru baca dari OpenCV
         cap = self._get_reader(path)
-        if not cap:
-            return QImage()
+        if not cap: return None
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            return QImage()
-
-        target_frame = int(round(time_sec * fps))
-        img = self._read_frame(cap, target_frame)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frame_idx = int(time * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
         
-        # Simpan hasil baca ke Cache
-        if not img.isNull():
-            self._video_frame_cache.put(time_sec, img)
-            
+        if ok:
+            self._video_frame_cache.put(time, frame)
+            return frame
+        return None
+
+    def _apply_effects(self, img, props: dict):
+        img = img.copy() 
+        c_props = props.get("color", {})
+        fx_props = props.get("effect", {})
+
+        bright = c_props.get("brightness", 0)
+        contrast = c_props.get("contrast", 0)
+        
+        if bright != 0 or contrast != 0:
+            alpha = 1.0 + (contrast / 100.0) 
+            beta = bright
+            img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
+
+        sat = c_props.get("saturation", 0)
+        hue = c_props.get("hue", 0)
+        temp = c_props.get("temperature", 0)
+        
+        if sat != 0 or hue != 0 or temp != 0:
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype("float32")
+            (h, s, v) = cv2.split(hsv)
+
+            if sat != 0:
+                s = s * (1.0 + (sat / 100.0))
+                s = np.clip(s, 0, 255)
+            if hue != 0:
+                h = h + hue
+                h = np.mod(h, 180)
+
+            hsv = cv2.merge([h, s, v])
+            img = cv2.cvtColor(hsv.astype("uint8"), cv2.COLOR_HSV2BGR)
+
+        if temp != 0:
+            b, g, r = cv2.split(img)
+            if temp > 0: # Warm
+                r = cv2.add(r, int(temp))
+                b = cv2.subtract(b, int(temp))
+            else: # Cool
+                r = cv2.subtract(r, int(abs(temp)))
+                b = cv2.add(b, int(abs(temp)))
+            img = cv2.merge([b, g, r])
+
+        blur = fx_props.get("blur", 0)
+        if blur > 0:
+            k = int(blur) * 2 + 1 
+            img = cv2.GaussianBlur(img, (k, k), 0)
+
         return img
 
+    def _cv2_to_qimage(self, cv_img):
+        if len(cv_img.shape) == 3:
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            h, w, ch = cv_img.shape
+        else:
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
+            h, w, ch = cv_img.shape
+
+        bytes_per_line = ch * w
+        cv_img = np.ascontiguousarray(cv_img)
+        qimg = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        return qimg.copy()
+
+    def _get_reader(self, path):
+        if path not in self._readers:
+            cap = cv2.VideoCapture(path)
+            if cap.isOpened():
+                self._readers[path] = cap
+        return self._readers.get(path)
+
     def release_all(self):
-        for cap in self._readers.values():
-            cap.release()
+        for r in self._readers.values(): r.release()
         self._readers.clear()
         self._image_cache.clear()
-        self._id_map.clear()
         self._video_frame_cache.clear()
-
-    def _read_frame(self, cap, frame_index: int) -> QImage:
-        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-        if abs(frame_index - current) > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-
-        ok, frame = cap.read()
-        if not ok:
-            return QImage()
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        return QImage(
-            frame.data, w, h, ch * w, QImage.Format_RGB888
-        ).copy()
-
-    def _get_reader(self, path: str):
-        # [FIX] Guard clause: Jangan buka OpenCV jika path kosong
-        if not path:
-            return None
-
-        if path not in self._readers:
-            try:
-                cap = cv2.VideoCapture(path)
-                if not cap.isOpened():
-                    return None
-                self._readers[path] = cap
-            except Exception as e:
-                print(f"Error opening video reader: {e}")
-                return None
-                
-        return self._readers[path]
-
+    
     @staticmethod
     def _blank():
         pix = QPixmap(320, 180)

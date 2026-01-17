@@ -5,7 +5,7 @@ from engine.render_engine import RenderEngine
 
 class RenderWorker(QObject):
     sig_progress = Signal(int)
-    sig_finished = Signal(bool, str) # Success, Message
+    sig_finished = Signal(bool, str)
 
     def __init__(self, timeline, settings, video_service):
         super().__init__()
@@ -17,7 +17,7 @@ class RenderWorker(QObject):
 
     def run(self):
         try:
-            # ✅ PERBAIKAN: Kirim timeline & video_service ke RenderEngine
+            # [FIX] Memanggil RenderEngine dengan 2 parameter (cocok dengan file 1)
             self.engine = RenderEngine(self.timeline, self.video_service) 
             
             output_path = self.settings.get("output_path", "output.mp4")
@@ -43,8 +43,6 @@ class RenderWorker(QObject):
 
     def stop(self):
         self._is_cancelled = True
-        if self.engine:
-            self.engine.stop()
 
 class RenderService(QObject):
     def __init__(self):
@@ -53,31 +51,19 @@ class RenderService(QObject):
         self.worker = None
 
     def start_render_process(self, timeline, settings, video_service):
-        """
-        Memulai proses render di thread terpisah.
-        Mengembalikan: (Success: bool, Worker/Message)
-        """
-        # Cek apakah sedang render
         if self.thread and self.thread.isRunning():
             return False, "Render already in progress"
 
-        # 1. Setup Thread & Worker
         self.thread = QThread()
         self.worker = RenderWorker(timeline, settings, video_service)
         self.worker.moveToThread(self.thread)
 
-        # 2. Wiring
         self.thread.started.connect(self.worker.run)
-        
-        # Cleanup otomatis
         self.worker.sig_finished.connect(self.thread.quit)
         self.worker.sig_finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
-        
-        # Bersihkan referensi self saat selesai
         self.thread.finished.connect(self._reset_state)
 
-        # 3. Start
         self.thread.start()
         return True, self.worker
 
