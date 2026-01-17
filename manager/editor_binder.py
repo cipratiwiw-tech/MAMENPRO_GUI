@@ -23,6 +23,9 @@ class EditorBinder(QObject):
 
         # [UPDATE] Status Message -> Real UI Status Bar
         self.c.sig_status_message.connect(self.ui.status_bar.showMessage)
+        
+        # [BARU] Reorder Event
+        self.c.sig_layers_reordered.connect(self._on_layers_reordered)
 
     def _connect_ui_to_logic(self):
         # ... (Koneksi panel lama TETAP SAMA) ...
@@ -38,6 +41,9 @@ class EditorBinder(QObject):
         # [BARU] Menu Bar Actions
         self.ui.action_save.triggered.connect(self._on_menu_save)
         self.ui.action_open.triggered.connect(self._on_menu_open)
+        
+        # [BARU] Request dari LayerPanel
+        self.ui.layer_panel.sig_request_reorder.connect(self.c.reorder_layers)
 
     # --- ACTION HANDLERS (GLUE) ---
 
@@ -86,3 +92,11 @@ class EditorBinder(QObject):
         else:
             self.ui.setting_panel.clear_form()
             self.ui.preview_panel.on_selection_changed(None)
+            
+    def _on_layers_reordered(self, updates):
+        # Beritahu Preview Panel
+        self.ui.preview_panel.on_layers_reordered(updates)
+        
+        # Catatan: LayerPanel UI sudah berubah duluan karena user yang drag-drop.
+        # Jadi kita TIDAK perlu refresh list LayerPanel, kecuali kita mau force sync.
+        # Untuk saat ini, biarkan UI List apa adanya karena asumsinya user sudah melihat perubahannya.

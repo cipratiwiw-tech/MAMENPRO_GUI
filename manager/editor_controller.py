@@ -16,6 +16,8 @@ class EditorController(QObject):
     sig_property_changed = Signal(str, dict)
     sig_selection_changed = Signal(object)
     sig_status_message = Signal(str)
+    # [BARU] Signal khusus reorder: mengirim list dict {id: str, z_index: int}
+    sig_layers_reordered = Signal(list)
 
     def __init__(self):
         super().__init__()
@@ -117,4 +119,33 @@ class EditorController(QObject):
     def _insert_layer(self, layer):
         self.state.add_layer(layer)
         self.sig_layer_created.emit(layer)
+        self.select_layer(layer.id)
+        
+    # --- REORDER LOGIC ---
+    def reorder_layers(self, from_idx: int, to_idx: int):
+        """
+        Memindahkan layer dalam list state dan update Z-Index.
+        """
+        if from_idx < 0 or to_idx < 0: return
+        if from_idx >= len(self.state.layers) or to_idx >= len(self.state.layers): return
+        if from_idx == to_idx: return
+
+        print(f"[CONTROLLER] Reordering layer {from_idx} -> {to_idx}")
+
+        # 1. Pindahkan item di List Python
+        layer = self.state.layers.pop(from_idx)
+        self.state.layers.insert(to_idx, layer)
+
+        # 2. Update Z-Index untuk SEMUA layer (agar konsisten)
+        # Index 0 = Z 0 (Paling Bawah)
+        updates = []
+        for i, l in enumerate(self.state.layers):
+            l.z_index = i
+            # Kita kumpulkan data perubahan untuk dikirim ke UI
+            updates.append({"id": l.id, "z_index": i})
+
+        # 3. Emit Signal Spesifik
+        self.sig_layers_reordered.emit(updates)
+        
+        # 4. Opsional: Reselect item yang dipindah
         self.select_layer(layer.id)

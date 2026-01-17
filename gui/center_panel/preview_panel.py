@@ -73,3 +73,21 @@ class PreviewPanel(QGraphicsView):
         if layer_data and layer_data.id in self.visual_registry:
             item = self.visual_registry[layer_data.id]
             item.setSelected(True)
+            
+    # [BARU] Handler Spesifik Z-Index
+    def on_layers_reordered(self, updates: list):
+        """
+        Menerima list dict: [{'id': '...', 'z_index': 0}, ...]
+        Hanya update tumpukan visual. Hemat resource.
+        """
+        for data in updates:
+            layer_id = data['id']
+            new_z = data['z_index']
+            
+            if layer_id in self.visual_registry:
+                item = self.visual_registry[layer_id]
+                item.setZValue(new_z)
+                
+        # Trigger refresh scene
+        self.scene.update()
+        print("[PREVIEW] Z-Indexes updated.")
