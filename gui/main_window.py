@@ -2,14 +2,16 @@ import sys
 from PySide6.QtWidgets import QApplication, QMainWindow, QSplitter
 from PySide6.QtCore import Qt
 
-# Import UI Components
 from gui.center_panel.preview_panel import PreviewPanel
 from gui.panels.layer_panel import LayerPanel
+from gui.panels.media_panel import MediaPanel
+from gui.panels.text_panel import TextTab
 from gui.right_panel.setting_panel import SettingPanel
-from engine.preview_engine import PreviewEngine 
 
-# Import Controller
+from canvas.video_item import VideoItem
 from manager.editor_controller import EditorController
+from gui.center_panel.preview_panel import PreviewPanel
+
 
 try:
     from gui.styles import STYLESHEET
@@ -19,20 +21,17 @@ except ImportError:
 class VideoEditorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MamenPro_GUI")
-        # [UPGRADE 1] Ukuran Window Start lebih ideal untuk Video Editing (16:9 ratio)
-        self.resize(1600, 900)
-        
-        if STYLESHEET:
-            self.setStyleSheet(STYLESHEET)
-        
-        # 1. Init Components
-        self.engine = PreviewEngine()
-        self._init_ui()
-        
-        # 2. Init Controller (Menyerahkan logika ke Controller)
-        self.controller = EditorController(self)
-        
+
+        self.preview_panel = PreviewPanel()
+
+        # ⛔ PAKSA JADI SATU-SATUNYA WIDGET
+        self.setCentralWidget(self.preview_panel)
+
+        self.setWindowTitle("PREVIEW TEST")
+        self.resize(800, 600)
+
+ 
+
     def _init_ui(self):
         # Gunakan style sheet khusus untuk handle splitter agar terlihat modern
         self.splitter = QSplitter(Qt.Horizontal)
@@ -40,13 +39,19 @@ class VideoEditorApp(QMainWindow):
         
         self.setCentralWidget(self.splitter)
         
-        self.preview = PreviewPanel()
+        center_panel = self.preview_panel
+
         self.layer_panel = LayerPanel()
-        self.setting = SettingPanel()
+        self.setting = SettingPanel(self.controller)
+        self.media_tab = MediaPanel(self.controller)
+        center_panel = self.preview_panel
+
+
         
         self.splitter.addWidget(self.layer_panel)
-        self.splitter.addWidget(self.preview)
+        self.splitter.addWidget(center_panel)
         self.splitter.addWidget(self.setting)
+
         
         # [UPGRADE 2] Distribusi Lebar Panel (Kiri, Tengah, Kanan)
         # Total +/- 1600px: Kiri 300, Tengah Dominan, Kanan 360 (biar ga kepotong)
@@ -62,7 +67,8 @@ class VideoEditorApp(QMainWindow):
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(2, False)
 
-        self.preview.scene.setSceneRect(0, 0, 1080, 1920)
+        self.preview_panel.scene.setSceneRect(0, 0, 1080, 1920)
+
         
     # --- [BARU] EVENT PENUTUPAN APLIKASI ---
     def closeEvent(self, event):

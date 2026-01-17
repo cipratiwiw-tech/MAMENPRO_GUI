@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget)
 from PySide6.QtCore import Signal
-from gui.panels.media_panel import MediaTab
+from gui.panels.media_panel import MediaPanel
 from gui.panels.text_panel import TextTab
 from gui.panels.caption_panel import CaptionTab
 from gui.right_panel.bulk_tab import BulkTab
@@ -9,7 +9,7 @@ class SettingPanel(QWidget):
     on_setting_change = Signal(dict)
     sig_bulk_requested = Signal(dict)
     
-    def __init__(self):
+    def __init__(self, controller):
         super().__init__()
         
         # [UPGRADE] Set batas minimal dan maksimal
@@ -25,11 +25,13 @@ class SettingPanel(QWidget):
         self.tabs = QTabWidget()
         
         # Inisialisasi Konten Tab
-        self.media_tab = MediaTab()
+        self.media_tab = MediaPanel(controller)
         self.text_tab = TextTab()
         self.caption_tab = CaptionTab()
         self.bulk_tab = BulkTab()
         
+        self.text_tab.sig_text_changed.connect(self._on_text_changed)
+
         # Menambahkan Tab ke Widget
         self.tabs.addTab(self.media_tab, "Media/Frame")
         self.tabs.addTab(self.text_tab, "Text/Para")
@@ -38,6 +40,12 @@ class SettingPanel(QWidget):
         
         self.layout.addWidget(self.tabs)
         self._connect_signals()
+        
+    def _on_text_changed(self, data: dict):
+        # sementara lempar ke controller (stub aman)
+        if hasattr(self.controller, "on_text_changed"):
+            self.controller.on_text_changed(data)
+
 
     def _connect_signals(self):
         # [FIX] Gunakan sinyal terpadu dari Tab
@@ -46,9 +54,7 @@ class SettingPanel(QWidget):
         self.bulk_tab.sig_start_bulk.connect(self.sig_bulk_requested.emit)
 
     def _emit_media_change(self, data):
-        """Membungkus data media dengan type tag sebelum di-emit"""
-        data["type"] = "media"
-        self.on_setting_change.emit(data)
+        pass
 
     def _emit_text_change(self, data):
         """Membungkus data text dengan type tag sebelum di-emit"""

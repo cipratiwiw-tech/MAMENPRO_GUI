@@ -16,6 +16,8 @@ class TextTab(QScrollArea):
         self.layout = QVBoxLayout(container)
         self.layout.setSpacing(12)
         self.layout.setContentsMargins(8, 8, 8, 8)
+        self.on_style_changed = None
+
         
         # [STYLE] Compact Input
         self.spinbox_style = """

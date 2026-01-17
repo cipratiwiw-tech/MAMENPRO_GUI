@@ -1,27 +1,22 @@
 # canvas/video_item.py
+
 from PySide6.QtWidgets import QGraphicsItem
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtGui import QPainter
 from PySide6.QtCore import QRectF
 
 class VideoItem(QGraphicsItem):
     def __init__(self):
         super().__init__()
-        self._pixmap: QPixmap | None = None
-        self._rect = QRectF()
-        self.start_time = 0.0
-        self.end_time = float("inf")
+        self.video_path = None
+        self._rect = QRectF(0, 0, 640, 360)  # placeholder size
 
-    def set_pixmap(self, pixmap: QPixmap):
-        self.prepareGeometryChange()
-        self._pixmap = pixmap
-        self._rect = QRectF(pixmap.rect())
+    def set_video_source(self, video_path: str):
+        self.video_path = video_path
 
     def boundingRect(self) -> QRectF:
         return self._rect
 
     def paint(self, painter: QPainter, option, widget=None):
-        if self._pixmap:
-            painter.drawPixmap(0, 0, self._pixmap)
-
-    def is_active(self, t: float) -> bool:
-        return self.start_time <= t <= self.end_time
+        # BELUM render video
+        # cuma placeholder biar keliatan item masuk scene
+        painter.drawRect(self._rect)
