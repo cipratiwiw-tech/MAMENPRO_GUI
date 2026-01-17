@@ -309,15 +309,17 @@ class PreviewPanel(QWidget):
         if layer_id in self.items_map:
             item = self.items_map[layer_id]
             item.blockSignals(True)
+
             item.update_transform(props)
-            
-            # [BARU] Update Z-Index jika ada (untuk sinkronisasi Z-Order)
+
             if "z_index" in props:
                 item.setZValue(props["z_index"])
-                
-            item.blockSignals(False)
+
             if "start_time" in props:
                 item.start_time = float(props["start_time"])
+
+            item.blockSignals(False)
+
 
     def on_selection_changed(self, layer_data):
         self.scene.blockSignals(True)

@@ -235,7 +235,11 @@ class EditorController(QObject):
             if any(k in new_props for k in ["start_time", "duration", "track_index"]):
                 self._sync_layer_to_timeline(layer)
             
-            self.sig_property_changed.emit(layer_id, new_props)
+            self.sig_property_changed.emit(
+                layer_id,
+                layer.properties.copy()   # FULL STATE
+            )
+
             
             clean_time = self.frame_to_time(self.current_frame)
             self.seek_to(clean_time)
@@ -368,3 +372,6 @@ class EditorController(QObject):
 
     def remove_chroma_config(self):
         self.update_layer_property(self.state.selected_layer_id, {"chroma_active": False})
+        
+    def on_property_update(self, payload):
+        print("[CONTROLLER]", payload)

@@ -71,7 +71,7 @@ class EditorBinder(QObject):
         self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
         
         # 4. PROPERTIES (PANEL KANAN)
-        self.ui.setting_panel.sig_property_changed.connect(self.c.update_layer_property)
+        self.ui.setting_panel.sig_property_update.connect(self.c.update_layer_property)
         self.ui.text_panel.sig_property_changed.connect(self.c.update_layer_property)
         
         # 5. RENDER (✅ NAMA SINYAL DIPERBAIKI)
@@ -111,9 +111,16 @@ class EditorBinder(QObject):
 
     def _on_selection_changed(self, layer_data):
         self.ui.preview_panel.on_selection_changed(layer_data)
+        
+        # Panggil Panel Properties Baru
+        # Kirim FULL object layer_data agar panel tahu TIPE layer-nya (kontekstual)
+        if hasattr(self.ui, 'setting_panel'):
+            self.ui.setting_panel.set_values(layer_data)
+            
+        # Text Panel Legacy (Opsional: Bisa digabung nanti)
         props = layer_data.properties if layer_data else {}
-        self.ui.setting_panel.set_values(props)
         self.ui.text_panel.set_values(props)
+        
         if layer_data:
             self.ui.layer_panel.select_item_visual(layer_data.id)
 
@@ -127,3 +134,6 @@ class EditorBinder(QObject):
     def _on_menu_open(self):
         path, _ = QFileDialog.getOpenFileName(self.ui, "Open Project", "", "JSON Files (*.json)")
         if path: self.c.load_project(path)
+        
+    def on_property_update(self, payload):
+        print("[CONTROLLER]", payload)

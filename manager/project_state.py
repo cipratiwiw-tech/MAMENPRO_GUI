@@ -1,22 +1,47 @@
-# manager/project_state.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 @dataclass
 class LayerData:
     id: str
-    type: str  # 'video', 'image', 'text'
+    type: str  # 'video', 'image', 'text', 'audio', 'shape', 'caption'
     name: str
     path: Optional[str] = None
     
+    # Payload Properti (Flat Dictionary tapi dengan Key standar Konstitusi)
     properties: Dict = field(default_factory=lambda: {
-        "x": 0, "y": 0, "scale": 100, "opacity": 1.0, "rotation": 0,
-        "start_time": 0.0, "duration": 5.0,
-        "text_content": "Double Click to Edit",
+        # --- TRANSFORM (Mandatory Visual) ---
+        "x": 0, "y": 0, 
+        "scale_x": 100, "scale_y": 100, # Support non-uniform scale
+        "scale": 100, # Legacy support
+        "rotation": 0,
+        "anchor_x": 0.5, "anchor_y": 0.5, # Center default
+        
+        # --- APPEARANCE ---
+        "opacity": 1.0,
+        "blend_mode": "Normal",
+        "visible": True,
+        
+        # --- TEXT SPECIFIC ---
+        "text_content": "New Text",
         "font_family": "Arial",
         "font_size": 60,
         "text_color": "#ffffff",
-        "is_bold": False
+        "is_bold": False,
+        
+        # --- TIMING (Read Only di Panel Properties, Edit di Timeline) ---
+        "start_time": 0.0,
+        "duration": 5.0,
+        "speed": 1.0,
+
+        # --- AUDIO ---
+        "volume": 1.0,
+        "mute": False,
+        
+        # --- CHROMA KEY ---
+        "chroma_active": False,
+        "chroma_color": "#00ff00",
+        "chroma_threshold": 0.15
     })
     
     z_index: int = 0
@@ -27,8 +52,7 @@ class ProjectState:
         self.layers: List[LayerData] = []
         self.selected_layer_id: Optional[str] = None
         
-        # [NEW] GLOBAL CANVAS RESOLUTION
-        # Default 1080x1920 (9:16) agar sesuai default Preview
+        # GLOBAL CANVAS RESOLUTION
         self.width: int = 1080
         self.height: int = 1920
 
