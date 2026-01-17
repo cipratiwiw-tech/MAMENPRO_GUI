@@ -1,9 +1,12 @@
 # manager/services/caption_service.py
 import uuid
+import time # Untuk simulasi delay
 from PySide6.QtCore import QObject, QThread, Signal
 from manager.project_state import LayerData
 
-# Worker Thread: Buruh yang bekerja di latar belakang
+# Nanti import engine asli: 
+# from engine.caption.transcriber import assembly_transcribe
+
 class CaptionWorker(QThread):
     sig_finished = Signal(list) # Mengirim hasil (list of layers)
     sig_error = Signal(str)
@@ -16,16 +19,13 @@ class CaptionWorker(QThread):
     def run(self):
         try:
             # --- DISINI LOGIC BERAT (AI) BERJALAN ---
-            # Di masa depan, import Transcriber asli di sini.
-            # from engine.caption.transcriber import assembly_transcribe
-            
             print(f"[WORKER] Starting AI Job for: {self.audio_path}")
             
-            # SIMULASI DELAY (Agar terlihat efek async-nya)
-            import time
+            # SIMULASI DELAY (Agar terlihat efek async-nya di UI)
+            # TODO: Nanti ganti dengan real processing time
             time.sleep(2) 
             
-            # MOCK DATA (Sama seperti logic lamamu)
+            # MOCK DATA
             mock_segments = [
                 {"text": "Halo semuanya", "start": 0.5, "end": 2.0},
                 {"text": "Selamat datang di", "start": 2.1, "end": 3.5},
@@ -35,11 +35,12 @@ class CaptionWorker(QThread):
             
             new_layers = []
             for i, seg in enumerate(mock_segments):
-                # Catatan #2: Z-index masih hardcoded disini, nanti kita refactor di Controller
+                # [DEBT NOTE #2] Z-index ditentukan di sini (Hardcoded).
+                # IDEALNYA: Worker tidak tahu z-index. Controller yang set nanti.
                 layer_id = str(uuid.uuid4())[:8]
                 layer = LayerData(
                     id=layer_id,
-                    type="text", # Catatan #3: Tetap konsisten sebagai Text Layer
+                    type="text",
                     name=f"Sub {i+1}",
                     properties={
                         "text_content": seg["text"],
@@ -60,9 +61,10 @@ class CaptionWorker(QThread):
         except Exception as e:
             self.sig_error.emit(str(e))
 
-class CaptionService(QObject): # Inherit QObject agar bisa handle signal
+class CaptionService(QObject):
     """
     Manager yang mengatur Worker Thread.
+    Jembatan antara Editor dan AI Engine.
     """
     # Signal Relay (Meneruskan dari Worker ke Controller)
     sig_success = Signal(list)
@@ -73,9 +75,16 @@ class CaptionService(QObject): # Inherit QObject agar bisa handle signal
         self.worker = None
 
     def start_generate_async(self, audio_path: str, config: dict):
-        # Hentikan worker lama jika masih jalan (opsional)
+        """
+        Memulai proses captioning di thread terpisah.
+        """
+        # [DEBT NOTE #1] Terminate adalah darurat.
+        # BAHAYA: Resource bisa bocor.
+        # TODO: Implementasi graceful cancellation (requestInterruption)
         if self.worker and self.worker.isRunning():
+            print("[SERVICE] ⚠️ Terminating running worker forcefullly (DEBT)")
             self.worker.terminate()
+            self.worker.wait() # Tunggu sampai benar-benar mati
             
         # Siapkan Worker Baru
         self.worker = CaptionWorker(audio_path, config)

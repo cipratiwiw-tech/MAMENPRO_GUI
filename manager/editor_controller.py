@@ -29,7 +29,7 @@ class EditorController(QObject):
         self.render_service = RenderService()
         self.io_service = ProjectIOService() # [BARU]
         self.cap_service = CaptionService() # [BARU]
-        # [BARU] Dengar laporan dari Service
+        # [BARU] Dengar laporan dari Service Async Caption
         self.cap_service.sig_success.connect(self._on_caption_success)
         self.cap_service.sig_fail.connect(self._on_caption_error)
 
@@ -119,7 +119,7 @@ class EditorController(QObject):
         else:
             self.sig_status_message.emit("❌ Failed to load project or empty.")
             
-    # Helper Internal
+    # Helper Internal (Penting)
     def _insert_layer(self, layer):
         self.state.add_layer(layer)
         self.sig_layer_created.emit(layer)
@@ -198,6 +198,10 @@ class EditorController(QObject):
             
     # --- CAPTION LOGIC (UPDATED ASYNC) ---
     def generate_auto_captions(self, config: dict):
+        """
+        Orkestrator Async:
+        Memicu Worker dan segera kembali agar UI tidak macet.
+        """
         current_id = self.state.selected_layer_id
         if not current_id:
             self.sig_status_message.emit("⚠️ Select a video/audio layer first!")
@@ -208,27 +212,28 @@ class EditorController(QObject):
             self.sig_status_message.emit("⚠️ Layer has no media file.")
             return
 
-        # 1. UI Feedback Langsung (Agar user tau proses mulai)
-        self.sig_status_message.emit("⏳ AI Processing Started... UI remains responsive!")
+        # 1. UI Feedback Langsung
+        self.sig_status_message.emit("⏳ AI Processing Started... Please wait.")
         
         # 2. Panggil Service ASYNC (Void return)
         self.cap_service.start_generate_async(layer.path, config)
 
-    # [BARU] Handler saat Sukses
+    # [BARU] Handler saat Sukses (Callback)
     def _on_caption_success(self, new_layers):
         if not new_layers:
             self.sig_status_message.emit("❌ AI finished but found no speech.")
             return
 
         # Masukkan ke State
+        # Catatan: Worker saat ini masih mengirim layer dengan z-index hardcoded.
         for l in new_layers:
             self._insert_layer(l)
             
         count = len(new_layers)
         self.sig_status_message.emit(f"✅ AI Done: Generated {count} captions.")
         
-        # Opsional: Emit signal khusus untuk beri tahu UI agar mematikan loading spinner
-        # self.sig_caption_process_finished.emit()
+        # Disini kita bisa kirim signal ke UI Panel untuk mengaktifkan tombol lagi
+        # (Idealnya via EditorBinder)
 
     # [BARU] Handler saat Error
     def _on_caption_error(self, err_msg):
