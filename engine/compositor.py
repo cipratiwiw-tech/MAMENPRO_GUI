@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt, QRectF
 
 from manager.timeline.layer_model import LayerModel
 from engine.video_service import VideoService
+from engine.chroma_processor import ChromaProcessor # <--- IMPORT BARU
 
 class Compositor:
     def __init__(self, video_provider, width=1920, height=1080):
@@ -55,13 +56,22 @@ class Compositor:
             qimg = self.vs.get_frame_image(path, local_time)
             
             if not qimg.isNull():
-                # Apply Transform
+                # 2. CEK EFEK CHROMA KEY
+                if props.get("chroma_active", False):
+                    c_color = props.get("chroma_color", "#00ff00")
+                    c_thresh = float(props.get("chroma_threshold", 0.3))
+                    
+                    # PROSES! (Hijau jadi Transparan)
+                    qimg = ChromaProcessor.process_qimage(qimg, c_color, c_thresh)
+
+                # 3. Transform & Gambar (Sama seperti sebelumnya)
                 painter.translate(props.get("x", 0), props.get("y", 0))
-                painter.rotate(rotation)
+                painter.rotate(props.get("rotation", 0))
+                scale = props.get("scale", 100) / 100.0
                 painter.scale(scale, scale)
-                painter.setOpacity(opacity)
+                painter.setOpacity(props.get("opacity", 1.0))
                 
-                painter.drawImage(0, 0, qimg) # Gunakan drawImage untuk QImage
+                painter.drawImage(0, 0, qimg)
 
         # --- B. TEXT LAYER ---
         elif layer.type == "text":

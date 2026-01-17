@@ -288,8 +288,31 @@ class EditorController(QObject):
         self.sig_status_message.emit(f"Error: {msg}")
 
     # CHROMA WRAPPERS (Simple Property Update)
-    def apply_chroma_config(self, color, thresh):
-        self.update_layer_property({"chroma_active": True, "chroma_color": color, "chroma_threshold": thresh})
+    def apply_chroma_config(self, color_hex: str, threshold: float):
+        """
+        Menerima setting dari Chroma Panel.
+        color_hex: String hex (misal "#00ff00")
+        threshold: Float 0.0 - 1.0 (Sensitivitas)
+        """
+        # 1. Pastikan ada layer terpilih
+        current_id = self.state.selected_layer_id
+        if not current_id: return
+
+        # 2. Update Properti Layer
+        props = {
+            "chroma_active": True,
+            "chroma_color": color_hex,
+            "chroma_threshold": threshold
+        }
         
+        # 3. Panggil method sakti (Sync Timeline + Update Preview)
+        self.update_layer_property(props)
+        self.sig_status_message.emit(f"✅ Chroma Applied: {color_hex}")
+
     def remove_chroma_config(self):
+        """Matikan efek chroma"""
+        current_id = self.state.selected_layer_id
+        if not current_id: return
+
         self.update_layer_property({"chroma_active": False})
+        self.sig_status_message.emit("🚫 Chroma Removed")
