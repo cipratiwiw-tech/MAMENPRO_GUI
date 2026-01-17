@@ -26,6 +26,11 @@ class EditorBinder(QObject):
         # [KRUSIAL] Jantung Aplikasi (Time & Visual Sync)
         # Controller mengirim (waktu, daftar_id_aktif)
         self.c.sig_preview_update.connect(self._on_preview_update)
+        
+        # [BARU] Timeline Interactions
+        if hasattr(self.ui.layer_panel, 'sig_request_seek'):
+            self.ui.layer_panel.sig_request_seek.connect(self.c.seek_to)
+            self.ui.layer_panel.sig_layer_selected.connect(self.c.select_layer)
 
     def _connect_ui_to_logic(self):
         # Panel Actions
@@ -53,23 +58,21 @@ class EditorBinder(QObject):
 
     # --- HANDLERS ---    
     def _on_preview_update(self, t: float, active_ids: list):
-        """
-        Handler Detak Jantung.
-        Diterima dari Controller setiap frame (misal 30fps).
-        """
-        # 1. Update Waktu di PreviewPanel (untuk animasi/scrubbing visual)
-        # (Pastikan PreviewPanel punya method 'set_current_time' atau sejenisnya nanti)
+        # 1. Update Preview Panel (Visual Konten)
         if hasattr(self.ui.preview_panel, "on_time_changed"):
             self.ui.preview_panel.on_time_changed(t)
-            
-        # 2. Update Visibilitas Layer
-        # Binder memberitahu PreviewPanel: "Hanya ID ini yang boleh muncul!"
-        # (Kita akan update PreviewPanel di langkah selanjutnya untuk support ini)
         if hasattr(self.ui.preview_panel, "sync_layer_visibility"):
             self.ui.preview_panel.sync_layer_visibility(active_ids)
+            
+        # 2. [BARU] Update Timeline Panel (Gerakkan Garis Merah)
+        if hasattr(self.ui.layer_panel, "update_playhead"):
+            self.ui.layer_panel.update_playhead(t)
 
+    # [UPDATE] Agar Timeline mendapat data lengkap saat layer dibuat
     def _on_layer_created(self, layer_data):
-        self.ui.layer_panel.add_item_visual(layer_data.id, layer_data.name)
+        # Kita panggil sync penuh saja agar urutan layer (track) selalu benar
+        # Ini sedikit boros tapi aman untuk konsistensi Z-Index vs Track Index
+        self.ui.layer_panel.sync_all_layers(self.c.state.layers)
         self.ui.preview_panel.on_layer_created(layer_data)
 
     def _on_layer_removed(self, layer_id):
@@ -82,6 +85,9 @@ class EditorBinder(QObject):
         self.ui.setting_panel.clear_form()
 
     def _on_property_changed(self, layer_id, props):
+        # Jika durasi/start berubah, panjang balok di timeline harus berubah
+        if "start_time" in props or "duration" in props:
+             self.ui.layer_panel.sync_all_layers(self.c.state.layers)
         self.ui.preview_panel.on_property_changed(layer_id, props)
         self.ui.setting_panel.update_form_visual(props)
         self.ui.text_panel.set_values(props)
@@ -97,6 +103,8 @@ class EditorBinder(QObject):
             self.ui.preview_panel.on_selection_changed(None)
 
     def _on_layers_reordered(self, updates):
+        # Refresh tampilan track timeline
+        self.ui.layer_panel.sync_all_layers(self.c.state.layers)
         self.ui.preview_panel.on_layers_reordered(updates)
 
     def _on_menu_save(self):

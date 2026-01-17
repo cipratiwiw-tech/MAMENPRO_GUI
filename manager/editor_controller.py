@@ -81,6 +81,14 @@ class EditorController(QObject):
         total_dur = self.timeline.get_total_duration()
         self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
         self.preview_engine.toggle_play()
+        
+    def seek_to(self, t: float):
+        """Memindahkan posisi waktu (Scrubbing)"""
+        # Panggil seek di engine
+        self.preview_engine.seek(t)
+        
+        # Force update visual (karena saat pause, tick tidak jalan otomatis)
+        self._on_engine_tick(self.preview_engine.current_time)
 
     # --- SYNC LOGIC ---
 

@@ -1,109 +1,139 @@
-# gui/panels/layer_panel.py
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QListWidget, 
-                             QPushButton, QHBoxLayout, QListWidgetItem, QLabel, QAbstractItemView)
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem
+from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtGui import QBrush, QColor, QPen, QFont
 
-class LayerPanel(QWidget):
-    # OUTPUT SIGNALS
+# Konfigurasi Visual Timeline
+ZOOM_LEVEL = 50.0  # 1 detik = 50 pixel
+TRACK_HEIGHT = 40
+HEADER_HEIGHT = 30
+
+class TimelineClipItem(QGraphicsRectItem):
+    """Representasi Visual dari Layer (Balok Warna)"""
+    def __init__(self, layer_data, row_index):
+        super().__init__()
+        self.layer_id = layer_data.id
+        self.setFlags(QGraphicsRectItem.ItemIsSelectable) # Nanti bisa ditambah ItemIsMovable
+        
+        # Hitung Geometri
+        start_pixel = float(layer_data.properties.get("start_time", 0.0)) * ZOOM_LEVEL
+        duration_pixel = float(layer_data.properties.get("duration", 5.0)) * ZOOM_LEVEL
+        y_pos = (row_index * TRACK_HEIGHT) + HEADER_HEIGHT + 5
+        
+        self.setRect(0, 0, duration_pixel, TRACK_HEIGHT - 10)
+        self.setPos(start_pixel, y_pos)
+        
+        # Styling
+        color = "#3498db" if layer_data.type == "video" else "#e67e22" if layer_data.type == "text" else "#9b59b6"
+        self.setBrush(QBrush(QColor(color)))
+        self.setPen(QPen(Qt.NoPen))
+        self.setOpacity(0.8)
+        
+        # Label Nama
+        self.text = QGraphicsTextItem(layer_data.name, self)
+        self.text.setDefaultTextColor(QColor("white"))
+        self.text.setFont(QFont("Arial", 8))
+        self.text.setPos(5, 5)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsRectItem.ItemSelectedChange:
+            # Highlight saat dipilih
+            self.setOpacity(1.0 if value else 0.8)
+            self.setPen(QPen(QColor("white"), 2) if value else QPen(Qt.NoPen))
+        return super().itemChange(change, value)
+
+class LayerPanel(QGraphicsView):
+    """
+    Timeline Panel: Menggantikan QListWidget lama.
+    Sekarang menampilkan layer secara horizontal (Waktu).
+    """
+    # Signal untuk Controller
+    sig_request_seek = Signal(float)
     sig_layer_selected = Signal(str)
-    sig_request_add = Signal(str)
+    
+    # Signal Legacy (Agar tidak error di Binder, meski belum diimplementasi full drag-dropnya)
+    sig_request_add = Signal(str) 
     sig_request_delete = Signal()
-    # [BARU] Signal Reorder: (start_index, destination_index)
     sig_request_reorder = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
-        self._id_map = {} 
-        self._init_ui()
-
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
+        self.scene = QGraphicsScene(self)
+        self.setScene(self.scene)
         
-        lbl_title = QLabel("LAYERS")
-        lbl_title.setStyleSheet("font-weight: bold; color: #56b6c2;")
-        layout.addWidget(lbl_title)
-
-        # List Widget Setup
-        self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet("""
-            QListWidget { border: 1px solid #3e4451; }
-            QListWidget::item:selected { background-color: #3e4451; border-left: 2px solid #61afef; }
-        """)
+        self.setBackgroundBrush(QBrush(QColor("#2c3e50")))
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         
-        # [BARU] AKTIFKAN DRAG & DROP
-        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
-        self.list_widget.setDefaultDropAction(Qt.MoveAction)
-        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        # Komponen Playhead (Garis Merah)
+        self.playhead = QGraphicsLineItem()
+        self.playhead.setPen(QPen(QColor("#e74c3c"), 2))
+        self.playhead.setZValue(999) # Selalu paling atas
+        self.scene.addItem(self.playhead)
         
-        # Connect Signals
-        self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.clip_registry = {} # Map ID -> TimelineClipItem
+
+    def set_duration_view(self, duration_sec: float):
+        """Mengatur panjang kanvas timeline"""
+        width = duration_sec * ZOOM_LEVEL + 500 # Extra space
+        height = max(500, len(self.clip_registry) * TRACK_HEIGHT + HEADER_HEIGHT)
+        self.scene.setSceneRect(0, 0, width, height)
         
-        # [BARU] Tangkap event pindah baris
-        self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
+        # Update tinggi playhead
+        self.playhead.setLine(0, 0, 0, height)
 
-        layout.addWidget(self.list_widget)
-
-        # Buttons (Sama seperti sebelumnya)
-        btn_layout = QHBoxLayout()
-        self.btn_add_text = QPushButton("+ Text")
-        self.btn_add_text.clicked.connect(lambda: self.sig_request_add.emit("text"))
-        self.btn_delete = QPushButton("Delete")
-        self.btn_delete.setStyleSheet("background-color: #e06c75; color: white;")
-        self.btn_delete.clicked.connect(lambda: self.sig_request_delete.emit())
+    def update_playhead(self, t: float):
+        """Dipanggil setiap frame untuk menggeser garis merah"""
+        x_pos = t * ZOOM_LEVEL
+        self.playhead.setX(x_pos)
         
-        btn_layout.addWidget(self.btn_add_text)
-        btn_layout.addWidget(self.btn_delete)
-        layout.addLayout(btn_layout)
+        # Auto scroll jika playhead keluar layar (Opsional)
+        # self.ensureVisible(self.playhead)
 
-    def _on_item_clicked(self, item):
-        layer_id = item.data(Qt.UserRole)
-        self.sig_layer_selected.emit(layer_id)
+    # --- CRUD VISUAL ---
 
-    def _on_rows_moved(self, parent, start, end, destination, row):
-        """
-        Logic internal Qt untuk drag-drop sedikit unik.
-        Kita perlu menerjemahkan 'Qt Model Index' menjadi 'Simple List Index'.
-        """
-        # Simplifikasi: start adalah index awal, row adalah index tujuan
-        # Karena di QListWidget 'end' biasanya sama dengan 'start' (pindah 1 item)
+    def add_item_visual(self, layer_id, name):
+        # Timeline butuh data lengkap (start/duration), bukan cuma ID/Nama.
+        # Karena Binder lama hanya kirim ID/Nama, kita tunggu 'sync_full' atau
+        # kita biarkan kosong dulu sampai 'on_property_changed' atau 'reload'.
+        # -> Strategi: Kita akan update Binder untuk kirim LayerData object penuh.
+        pass 
+
+    def sync_all_layers(self, layers: list):
+        """Reset total dan gambar ulang semua layer (Paling aman)"""
+        # Hapus semua clip (kecuali playhead)
+        for item in self.clip_registry.values():
+            self.scene.removeItem(item)
+        self.clip_registry.clear()
         
-        # Koreksi index tujuan jika item dipindah ke bawah
-        final_dest = row
-        if row > start:
-            final_dest = row - 1
+        # Gambar ulang
+        max_duration = 0
+        for i, layer_data in enumerate(layers):
+            clip = TimelineClipItem(layer_data, i)
+            self.scene.addItem(clip)
+            self.clip_registry[layer_data.id] = clip
             
-        # Emit signal ke Controller
-        self.sig_request_reorder.emit(start, final_dest)
+            # Cek durasi max
+            end_time = float(layer_data.properties.get("start_time", 0)) + float(layer_data.properties.get("duration", 5))
+            if end_time > max_duration: max_duration = end_time
+            
+        self.set_duration_view(max(10.0, max_duration))
 
-    # --- API VISUAL ---
-    def add_item_visual(self, layer_id: str, name: str):
-        # Insert di row 0 (paling atas tumpukan UI = paling atas Z-Index)
-        # TAPI: Dalam list visual, biasanya item atas = Z-index tinggi.
-        # ProjectState kita: index 0 = Z-index 0 (paling bawah).
-        # Jadi UI List harus DIBALIK urutannya atau logic add-nya disesuaikan.
+    def select_item_visual(self, layer_id):
+        self.scene.clearSelection()
+        if layer_id in self.clip_registry:
+            self.clip_registry[layer_id].setSelected(True)
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
         
-        # Untuk SEMENTARA: Kita anggap List Index 0 = Background (Bawah).
-        # Jadi add_item taruh di paling bawah list.
-        item = QListWidgetItem(name)
-        item.setData(Qt.UserRole, layer_id)
-        self.list_widget.addItem(item) # Add to bottom
-        self._id_map[layer_id] = item
-
-    def remove_item_visual(self, layer_id: str):
-        if layer_id in self._id_map:
-            item = self._id_map[layer_id]
-            self.list_widget.takeItem(self.list_widget.row(item))
-            del self._id_map[layer_id]
-
-    def select_item_visual(self, layer_id: str):
-        if layer_id in self._id_map:
-            item = self._id_map[layer_id]
-            self.list_widget.setCurrentItem(item)
+        # 1. Deteksi Klik di Ruler/Background (Seeking)
+        # Jika tidak mengenai ClipItem, berarti user mau geser Playhead
+        item = self.itemAt(event.pos())
+        if not isinstance(item, TimelineClipItem):
+            scene_pos = self.mapToScene(event.pos())
+            t = max(0, scene_pos.x() / ZOOM_LEVEL)
+            self.sig_request_seek.emit(t)
+            self.update_playhead(t)
+            
+        # 2. Deteksi Klik di Clip (Selection)
         else:
-            self.list_widget.clearSelection()
-            
-    # [BARU] Fitur Block Signal saat refresh total
-    def clear_visual(self):
-        self.list_widget.clear()
-        self._id_map.clear()
+            self.sig_layer_selected.emit(item.layer_id)
