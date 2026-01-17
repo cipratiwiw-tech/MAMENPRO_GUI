@@ -8,6 +8,7 @@ from .sections.appearance_section import AppearanceSection
 from .sections.timing_section import TimingSection
 from .sections.audio_section import AudioSection
 from .sections.text_section import TextSection
+from .sections.color_section import ColorSection # <--- BARU
 
 class StateAdapter:
     @staticmethod
@@ -43,20 +44,29 @@ class StateAdapter:
                 "weight": flat_props.get("text_weight", "Normal"),
                 "italic": flat_props.get("text_italic", False),
                 "wrap": flat_props.get("text_wrap", False),
-                
                 "align": flat_props.get("text_align", "left"),
                 "line_height": flat_props.get("line_height", 1.2),
                 "letter_spacing": flat_props.get("letter_spacing", 0),
-                
                 "stroke_enabled": flat_props.get("stroke_enabled", False),
                 "stroke_color": flat_props.get("stroke_color", "#000000"),
                 "stroke_width": flat_props.get("stroke_width", 2),
-                
                 "shadow_enabled": flat_props.get("shadow_enabled", False),
                 "shadow_color": flat_props.get("shadow_color", "#000000"),
                 "shadow_blur": flat_props.get("shadow_blur", 5),
                 "shadow_x": flat_props.get("shadow_x", 5),
                 "shadow_y": flat_props.get("shadow_y", 5),
+            },
+            "color": { # <--- BARU (Color Grading)
+                "brightness": flat_props.get("brightness", 0),
+                "contrast": flat_props.get("contrast", 0),
+                "exposure": flat_props.get("exposure", 0),
+                "saturation": flat_props.get("saturation", 0),
+                "hue": flat_props.get("hue", 0),
+                "temperature": flat_props.get("temperature", 0),
+            },
+            "effect": { # <--- BARU (FX)
+                "blur": flat_props.get("blur", 0),
+                "vignette": flat_props.get("vignette", 0),
             }
         }
 
@@ -79,20 +89,27 @@ class StateAdapter:
             "text.weight": "text_weight",
             "text.italic": "text_italic",
             "text.wrap": "text_wrap",
-            
             "text.align": "text_align",
             "text.line_height": "line_height",
             "text.letter_spacing": "letter_spacing",
-            
             "text.stroke_enabled": "stroke_enabled",
             "text.stroke_color": "stroke_color",
             "text.stroke_width": "stroke_width",
-            
             "text.shadow_enabled": "shadow_enabled",
             "text.shadow_color": "shadow_color",
             "text.shadow_blur": "shadow_blur",
             "text.shadow_x": "shadow_x",
             "text.shadow_y": "shadow_y",
+            
+            # COLOR & FX <--- BARU
+            "color.brightness": "brightness",
+            "color.contrast": "contrast",
+            "color.exposure": "exposure",
+            "color.saturation": "saturation",
+            "color.hue": "hue",
+            "color.temperature": "temperature",
+            "effect.blur": "blur",
+            "effect.vignette": "vignette",
         }
         if path in map_table:
             return {map_table[path]: value}
@@ -134,13 +151,15 @@ class SettingPanel(QWidget):
         self.sections = []
         
         self.sec_transform = TransformSection()
-        self.sec_text = TextSection() # TEXT
+        self.sec_text = TextSection()
+        self.sec_color = ColorSection() # <--- BARU
         self.sec_appearance = AppearanceSection()
         self.sec_timing = TimingSection()
         self.sec_audio = AudioSection()
         
         self._register_section(self.sec_transform)
         self._register_section(self.sec_text)
+        self._register_section(self.sec_color) # <--- BARU
         self._register_section(self.sec_appearance)
         self._register_section(self.sec_timing)
         self._register_section(self.sec_audio)
@@ -169,44 +188,40 @@ class SettingPanel(QWidget):
         clean_props = StateAdapter.to_ui_structure(flat_props)
         l_type = layer_data.type
         
-        # ==================================================
-        # 🔥 SMART REORDERING & VISIBILITY 🔥
-        # ==================================================
-        
+        # SMART REORDER
         if l_type in ['text', 'caption']:
-            # Jika Text: Text Section Paling Atas
-            # Transform Section TIDAK DIMASUKKAN ke list prioritas (akan di-hide di bawah)
             priority_order = [
                 self.sec_text,
                 self.sec_appearance,
+                self.sec_color, # Color juga bisa untuk teks (fill/gradient future)
                 self.sec_timing,
                 self.sec_audio
             ]
         else:
-            # Jika Video/Image: Transform Section Paling Atas
+            # Video/Image Priority
             priority_order = [
                 self.sec_transform,
-                self.sec_text,
+                self.sec_color, # Color Section Penting untuk Video
                 self.sec_appearance,
                 self.sec_timing,
-                self.sec_audio
+                self.sec_audio,
+                self.sec_text
             ]
             
-        # Reorder Layout
         for section in priority_order:
             self.container_layout.addWidget(section)
 
-        # ==================================================
         # VISIBILITY RULES
-        # ==================================================
-        
-        # [UPDATE] Transform hanya muncul untuk Video, Image, Shape. 
-        # Text tidak perlu transform karena sudah ada di canvas (mouse)
         vis_transform = l_type in ['video', 'image', 'shape']
         self.sec_transform.setVisible(vis_transform)
         
         vis_appear = l_type in ['video', 'image', 'text', 'shape']
         self.sec_appearance.setVisible(vis_appear)
+        
+        # Color Section: Video & Image (Wajib), Text (Opsional, tapi biasanya teks punya panel sendiri)
+        # Kita aktifkan untuk Video & Image saja dulu agar fokus
+        vis_color = l_type in ['video', 'image'] 
+        self.sec_color.setVisible(vis_color)
         
         vis_timing = l_type in ['video', 'image', 'text', 'audio', 'shape', 'caption']
         self.sec_timing.setVisible(vis_timing)
@@ -217,7 +232,6 @@ class SettingPanel(QWidget):
         vis_text = l_type in ['text', 'caption']
         self.sec_text.setVisible(vis_text)
         
-        # Populate UI
         for section in self.sections:
             if section.isVisible():
                 section.apply_state(clean_props)
