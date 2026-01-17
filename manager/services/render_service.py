@@ -1,10 +1,13 @@
 import time
+import gc
 from PySide6.QtCore import QThread, Signal, QObject
+# 👇👇👇 PASTIKAN BARIS INI ADA! 👇👇👇
+from PySide6.QtGui import QImage 
 
 from engine.compositor import Compositor
 from engine.ffmpeg_renderer import FFmpegRenderer
+from engine.video_service import VideoService
 from manager.timeline.timeline_engine import TimelineEngine
-from engine.video_service import VideoService # Import Class nya saja
 
 class RenderWorker(QThread):
     sig_progress = Signal(int)       # 0-100%
@@ -13,8 +16,6 @@ class RenderWorker(QThread):
 
     def __init__(self, timeline_engine: TimelineEngine, output_path: str, config: dict):
         super().__init__()
-        # Kita copy referensi engine. 
-        # Karena TimelineEngine hanya READ (get_active_layers) saat render, ini aman.
         self.timeline = timeline_engine 
         self.output_path = output_path
         self.config = config
@@ -26,54 +27,76 @@ class RenderWorker(QThread):
         self.is_cancelled = False
 
     def run(self):
-        # 1. INSTANCE PRIVATE (Video Service Khusus Render)
-        # Ini menjamin tidak ada konflik dengan Preview UI
+        # Gunakan instance VideoService baru (Private) agar tidak ganggu Preview
         render_vs = VideoService()
+        renderer = None
         
         try:
-            # 2. Setup Compositor dengan Provider Private
+            # 1. SETUP
             compositor = Compositor(render_vs, self.width, self.height)
             renderer = FFmpegRenderer(self.output_path, self.width, self.height, self.fps)
             renderer.start_process()
             
             total_duration = self.timeline.get_total_duration()
-            total_frames = int(total_duration * self.fps)
+            # Safety: Render minimal 1 detik jika kosong
+            if total_duration <= 0: total_duration = 1.0
             
-            self.sig_log.emit(f"Rendering {total_frames} frames...")
+            total_frames = int(total_duration * self.fps)
+            self.sig_log.emit(f"Rendering {total_frames} frames ({self.width}x{self.height} @ {self.fps}fps)...")
 
-            # 3. LOOPING PRESISI (Based on Frame Count)
+            # 2. RENDER LOOP
             for frame_idx in range(total_frames):
-                if self.is_cancelled: break
+                if self.is_cancelled:
+                    self.sig_log.emit("⚠️ Render Cancelled by User")
+                    break
                 
-                # Hitung waktu berdasarkan frame number (Lebih akurat dari float addition)
+                # Hitung waktu presisi
                 current_time = frame_idx / self.fps
                 
-                # A. Get Active Layers
+                # A. Rendering
                 active_layers = self.timeline.get_active_layers(current_time)
-                
-                # B. Compose (Pake QImage)
                 qimage = compositor.compose_frame(current_time, active_layers)
                 
-                # C. Konversi ke RGB24 Raw Bytes
-                # Convert ke RGB888 (24-bit RGB) -> Sesuai -pix_fmt rgb24 di FFmpeg
+                # B. Convert & Write ke FFmpeg
+                if qimage.isNull(): 
+                    continue 
+
+                # Konversi ke RGB888 (24-bit) menggunakan Enum QImage
                 qimage_rgb = qimage.convertToFormat(QImage.Format_RGB888)
-                raw_bytes = qimage_rgb.constBits().tobytes()
+                ptr = qimage_rgb.constBits()
+                if ptr:
+                    raw_bytes = ptr.tobytes()
+                    renderer.write_frame(raw_bytes)
                 
-                renderer.write_frame(raw_bytes)
-                
-                # D. Progress
+                # C. Progress
                 if frame_idx % 10 == 0:
                     pct = int((frame_idx / total_frames) * 100)
                     self.sig_progress.emit(pct)
+                    
+                # D. Garbage Collection (Opsional)
+                # if frame_idx % 200 == 0: gc.collect() 
 
-            renderer.close_process()
-            self.sig_finished.emit(True, self.output_path)
+            if self.is_cancelled:
+                self.sig_finished.emit(False, "Cancelled")
+            else:
+                self.sig_finished.emit(True, self.output_path)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.sig_finished.emit(False, str(e))
+            
         finally:
-            # PENTING: Lepaskan file handle video di thread ini
+            # 3. CLEANUP RESOURCES
+            self.sig_log.emit("🧹 Cleaning up resources...")
+            if renderer:
+                renderer.close_process()
+            
+            # Lepas akses file video
             render_vs.release_all()
+            
+            # Paksa bersihkan RAM
+            gc.collect()
 
 class RenderService(QObject):
     """Manager Service untuk Render"""
@@ -82,11 +105,10 @@ class RenderService(QObject):
         self.worker = None
 
     def start_render_process(self, timeline_engine, config):
-        # Config example: {'path': 'out.mp4', 'width': 1920, 'height': 1080, 'fps': 30}
         output_path = config.get("path")
         
         if self.worker and self.worker.isRunning():
             return False, "Render sedang berjalan"
 
         self.worker = RenderWorker(timeline_engine, output_path, config)
-        return True, self.worker # Return worker untuk di-connect signalnya oleh Controller
+        return True, self.worker
