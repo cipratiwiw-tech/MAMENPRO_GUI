@@ -51,6 +51,9 @@ class EditorBinder(QObject):
         # [BARU] Chroma Panel -> Controller
         self.ui.chroma_panel.sig_apply_chroma.connect(self.c.apply_chroma_config)
         self.ui.chroma_panel.sig_remove_chroma.connect(self.c.remove_chroma_config)
+        
+        # [BARU] Caption Panel -> Controller
+        self.ui.caption_panel.sig_request_caption.connect(self.c.generate_auto_captions)
 
     # --- ACTION HANDLERS (GLUE) ---
 

@@ -7,6 +7,7 @@ import uuid
 from manager.services.template_service import TemplateService
 from manager.services.render_service import RenderService
 from manager.services.project_io_service import ProjectIOService # [BARU]
+from manager.services.caption_service import CaptionService
 
 class EditorController(QObject):
     # Signals (Tetap sama)
@@ -27,6 +28,7 @@ class EditorController(QObject):
         self.tpl_service = TemplateService()
         self.render_service = RenderService()
         self.io_service = ProjectIOService() # [BARU]
+        self.cap_service = CaptionService() # [BARU]
 
     # --- BAGIAN 1: LAYER CRUD (Logic Inti) ---
     def add_new_layer(self, layer_type, path=None):
@@ -190,3 +192,38 @@ class EditorController(QObject):
             updates = {"chroma_active": False}
             self.update_layer_property(updates)
             self.sig_status_message.emit("🚫 Chroma removed")
+            
+    # --- CAPTION LOGIC ---
+    def generate_auto_captions(self, config: dict):
+        """
+        Orkestrator:
+        1. Ambil layer terpilih (harus video/audio).
+        2. Ambil path filenya.
+        3. Panggil Service AI.
+        4. Masukkan layer teks hasil AI ke State.
+        """
+        current_id = self.state.selected_layer_id
+        if not current_id:
+            self.sig_status_message.emit("⚠️ Select a video/audio layer first!")
+            return
+
+        layer = self.state.get_layer(current_id)
+        if not layer or not layer.path:
+            self.sig_status_message.emit("⚠️ Layer has no media file.")
+            return
+
+        # Notify UI
+        self.sig_status_message.emit("🤖 Analyzing Audio (AI)... Please wait.")
+        
+        # Delegasi ke Service
+        # (Idealnya ini async/thread seperti RenderService agar tidak freeze)
+        new_layers = self.cap_service.generate_layers_from_audio(layer.path, config)
+        
+        if new_layers:
+            count = len(new_layers)
+            for l in new_layers:
+                self._insert_layer(l)
+                
+            self.sig_status_message.emit(f"✅ Generated {count} caption segments.")
+        else:
+            self.sig_status_message.emit("❌ No speech detected.")

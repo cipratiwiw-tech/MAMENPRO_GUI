@@ -31,15 +31,21 @@ class PreviewPanel(QGraphicsView):
     
     def on_layer_created(self, layer_data):
         item = None
+        
+        # 1. Filter Visual Only
+        # Audio tidak perlu digambar di canvas preview visual
+        if layer_data.type == 'audio':
+            return 
+
+        # 2. Factory Logic Sederhana
         if layer_data.type == 'text':
             item = TextItem(layer_data.id, layer_data.properties.get('text_content', 'Text'))
         else:
+            # Video / Image
             item = VideoItem(layer_data.id, layer_data.path)
             
         if item:
-            # PASS Z-INDEX DISINI
             item.update_properties(layer_data.properties, layer_data.z_index)
-            
             self.scene.addItem(item)
             self.visual_registry[layer_data.id] = item
 
