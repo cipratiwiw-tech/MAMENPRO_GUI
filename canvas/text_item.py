@@ -7,6 +7,11 @@ class TextItem(QGraphicsTextItem):
     def __init__(self, layer_id, text="New Text"):
         super().__init__(text)
         self.layer_id = layer_id
+        
+        # [BARU] Default Time
+        self.start_time = 0.0
+        self.duration = 5.0
+        
         self.setFlags(
             QGraphicsItem.ItemIsMovable | 
             QGraphicsItem.ItemIsSelectable |
@@ -19,6 +24,7 @@ class TextItem(QGraphicsTextItem):
         self._apply_style()
         self.setZValue(0)
 
+    # ... (Method _apply_style & paint TETAP SAMA) ...
     def _apply_style(self):
         font = QFont(self._font_family, self._font_size)
         font.setBold(self._is_bold)
@@ -33,15 +39,17 @@ class TextItem(QGraphicsTextItem):
             painter.drawRect(self.boundingRect())
 
     def update_properties(self, props: dict, z_index: int = 0):
-        """[UPDATE] Menerima z_index"""
-        # ... logic properti lain sama ...
         if "x" in props: self.setX(props["x"])
         if "y" in props: self.setY(props["y"])
         if "scale" in props: self.setScale(props["scale"] / 100.0)
         if "rotation" in props: self.setRotation(props["rotation"])
         if "text_content" in props: self.setPlainText(props["text_content"])
         
-        # Style Update Logic
+        # [BARU] Update Time Properties
+        if "start_time" in props: self.start_time = float(props["start_time"])
+        if "duration" in props: self.duration = float(props["duration"])
+
+        # Style Update
         style_changed = False
         if "font_family" in props: 
             self._font_family = props["font_family"]
@@ -59,5 +67,15 @@ class TextItem(QGraphicsTextItem):
         if style_changed:
             self._apply_style()
 
-        # Update Z-Value
         self.setZValue(z_index)
+
+    # [BARU] Logic Timeline
+    def update_time(self, current_time):
+        end_time = self.start_time + self.duration
+        
+        if self.start_time <= current_time < end_time:
+            if not self.isVisible():
+                self.setVisible(True)
+        else:
+            if self.isVisible():
+                self.setVisible(False)

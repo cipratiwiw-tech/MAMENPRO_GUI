@@ -26,6 +26,9 @@ class EditorBinder(QObject):
         
         # [BARU] Reorder Event
         self.c.sig_layers_reordered.connect(self._on_layers_reordered)
+        
+        # [BARU] Sambungkan Waktu Controller -> Preview Panel
+        self.c.sig_time_updated.connect(self.ui.preview_panel.on_time_changed)
 
     def _connect_ui_to_logic(self):
         # ... (Koneksi panel lama TETAP SAMA) ...
@@ -54,6 +57,9 @@ class EditorBinder(QObject):
         
         # [BARU] Caption Panel -> Controller
         self.ui.caption_panel.sig_request_caption.connect(self.c.generate_auto_captions)
+        
+        # [BARU] Sambungkan Action Play (Spasi) ke Controller
+        self.ui.action_play.triggered.connect(self.c.toggle_play)
 
     # --- ACTION HANDLERS (GLUE) ---
 

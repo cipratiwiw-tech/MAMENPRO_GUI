@@ -125,3 +125,13 @@ class PreviewPanel(QGraphicsView):
         self.scene.clear()
         self.visual_registry.clear()
         print("[PREVIEW] Visual cleared.")
+        
+        # [BARU] Method yang dipanggil saat timer berjalan (Timeline Tick)
+    def on_time_changed(self, t):
+        # Broadcast waktu ke semua item visual
+        for item in self.visual_registry.values():
+            if hasattr(item, 'update_time'):
+                item.update_time(t)
+        
+        # Opsional: Paksa redraw scene jika ada artefak visual
+        # self.scene.update()

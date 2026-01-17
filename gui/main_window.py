@@ -1,6 +1,7 @@
 # gui/main_window.py
 import sys
 from PySide6.QtWidgets import QMainWindow, QSplitter, QTabWidget, QStatusBar, QMenu
+from PySide6.QtGui import QAction, QKeySequence # [BARU] Tambah QKeySequence
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 
@@ -90,3 +91,9 @@ class VideoEditorApp(QMainWindow):
         action_exit = QAction("Exit", self)
         action_exit.triggered.connect(self.close)
         file_menu.addAction(action_exit)
+        
+        # [BARU] Menu Playback (untuk shortcut Spasi)
+        # Kita buat Action tersembunyi agar bisa di-trigger Binder
+        self.action_play = QAction("Play/Pause", self)
+        self.action_play.setShortcut(QKeySequence(Qt.Key_Space)) # Shortcut SPASI
+        self.addAction(self.action_play) # Add to window
