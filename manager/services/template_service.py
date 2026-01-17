@@ -4,61 +4,60 @@ import uuid
 
 class TemplateService:
     """
-    Bertanggung jawab menerjemahkan 'Template ID' menjadi 
-    satu atau beberapa objek LayerData yang siap dipakai.
+    Service khusus untuk meracik layer-layer berdasarkan resep template.
+    MURNI LOGIC & DATA. Tidak ada UI.
     """
     
-    def generate_layers_from_template(self, template_id: str) -> list[LayerData]:
+    def generate_layers(self, template_id: str) -> list[LayerData]:
         """
-        Returns: List of LayerData objects
+        Menerima ID, Mengembalikan List LayerData baru.
         """
         layers = []
         
         if template_id == "tpl_quote":
-            # Resep Quote: Background Gelap + Teks
-            # 1. Background (Misal pakai Shape atau Solid Color nanti)
-            # Untuk sekarang kita simulasi dengan Text Layer sebagai placeholder
-            bg_id = str(uuid.uuid4())[:8]
-            l1 = LayerData(
-                id=bg_id, 
-                type="text", 
-                name="Quote BG (Placeholder)",
+            # Resep 1: Background Gelap
+            bg = LayerData(
+                id=str(uuid.uuid4())[:8],
+                type="text", # Sementara pakai text sbg placeholder shape
+                name="Background",
                 properties={
-                    "text_content": "⬛ [Background Area]", 
-                    "font_size": 100, 
-                    "opacity": 0.5
-                }
+                    "text_content": "⬛ [BG AREA]", 
+                    "font_size": 150, 
+                    "opacity": 0.3,
+                    "text_color": "#000000"
+                },
+                z_index=0
             )
             
-            # 2. Text Utama
-            txt_id = str(uuid.uuid4())[:8]
-            l2 = LayerData(
-                id=txt_id, 
-                type="text", 
+            # Resep 2: Teks Quote
+            txt = LayerData(
+                id=str(uuid.uuid4())[:8],
+                type="text",
                 name="Quote Text",
                 properties={
-                    "text_content": "\"Insert Quote Here\"", 
-                    "font_size": 80, 
-                    "y": 0
+                    "text_content": "\"Insert Your Quote Here\"", 
+                    "font_size": 60,
+                    "y": 0,
+                    "is_bold": True
                 },
                 z_index=1
             )
-            layers.extend([l1, l2])
+            layers.extend([bg, txt])
 
         elif template_id == "tpl_news":
-            # Resep News: Lower Third
-            lower_id = str(uuid.uuid4())[:8]
-            l1 = LayerData(
-                id=lower_id, 
-                type="text", 
-                name="Lower Third",
+            # Resep News Lower Third
+            l3 = LayerData(
+                id=str(uuid.uuid4())[:8],
+                type="text",
+                name="News Ticker",
                 properties={
-                    "text_content": "BREAKING NEWS", 
-                    "y": 400, 
+                    "text_content": "🔴 BREAKING NEWS: LIVE REPORT",
+                    "y": 400,
+                    "font_size": 40,
                     "text_color": "#ff0000",
                     "is_bold": True
                 }
             )
-            layers.append(l1)
+            layers.append(l3)
             
         return layers

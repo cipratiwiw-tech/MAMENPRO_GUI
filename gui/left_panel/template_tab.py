@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QListWidgetItem
 from PySide6.QtCore import Signal, Qt
 
 class TemplateTab(QWidget):
-    # Signal: Mengirim ID template yang dipilih
+    # SIGNAL OUT: User memilih template ID ini
     sig_apply_template = Signal(str)
 
     def __init__(self, parent=None):
@@ -14,20 +14,19 @@ class TemplateTab(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         
-        lbl = QLabel("TEMPLATES")
-        lbl.setStyleSheet("font-weight: bold; color: #98c379;")
+        lbl = QLabel("PRESET TEMPLATES")
+        lbl.setStyleSheet("font-weight: bold; color: #98c379; margin-bottom: 5px;")
         layout.addWidget(lbl)
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet("border: 1px solid #3e4451;")
         layout.addWidget(self.list_widget)
 
-        # Mock Data Templates
+        # Static Data (Hanya UI)
         templates = [
-            ("Intro Gaming", "tpl_gaming"),
-            ("Quote of the Day", "tpl_quote"),
-            ("Product Promo", "tpl_promo"),
-            ("Lower Third News", "tpl_news")
+            ("📝 Quote Generator", "tpl_quote"),
+            ("📰 News Lower Third", "tpl_news"),
+            ("🎬 Simple Intro", "tpl_intro")
         ]
 
         for name, code in templates:
@@ -35,8 +34,14 @@ class TemplateTab(QWidget):
             item.setData(Qt.UserRole, code)
             self.list_widget.addItem(item)
 
-        self.list_widget.itemDoubleClicked.connect(self._on_item_dbl_clicked)
+        # Event
+        self.list_widget.itemDoubleClicked.connect(self._on_dbl_click)
+        
+        lbl_hint = QLabel("Double click to apply")
+        lbl_hint.setStyleSheet("color: #5c6370; font-size: 10px; font-style: italic;")
+        layout.addWidget(lbl_hint)
 
-    def _on_item_dbl_clicked(self, item):
-        code = item.data(Qt.UserRole)
-        self.sig_apply_template.emit(code)
+    def _on_dbl_click(self, item):
+        tpl_id = item.data(Qt.UserRole)
+        # EMIT SIGNAL (Jangan panggil controller!)
+        self.sig_apply_template.emit(tpl_id)
