@@ -206,8 +206,42 @@ class EditorController(QObject):
             self._insert_layer(l)
 
     def process_render(self, config):
-        # Render Service pakai logic sendiri (threading), jadi tidak perlu on_tick
-        self.render_service.start_render_process(self.state, config)
+        """
+        Memulai proses export video.
+        Config berisi: {'path': ..., 'fps': ..., 'width': ..., 'height': ...}
+        """
+        # 1. Validasi
+        if self.timeline.get_total_duration() <= 0:
+            self.sig_status_message.emit("❌ Timeline is empty!")
+            return
+
+        self.sig_status_message.emit("⏳ Preparing Render...")
+        
+        # 2. Start Service
+        # Kita kirim 'self.timeline' ke service. 
+        # Ingat: RenderService hanya akan BACA (get_active_layers), tidak tulis.
+        success, worker_or_msg = self.render_service.start_render_process(self.timeline, config)
+        
+        if success:
+            worker = worker_or_msg
+            worker.sig_progress.connect(self._on_render_progress)
+            worker.sig_finished.connect(self._on_render_finished)
+            worker.sig_log.connect(lambda msg: print(f"[RENDER] {msg}")) # Atau log ke UI
+            
+            worker.start()
+            self.preview_engine.pause() # Pause preview saat render
+        else:
+            self.sig_status_message.emit(f"❌ {worker_or_msg}")
+
+    def _on_render_progress(self, val):
+        self.sig_status_message.emit(f"Rendering: {val}%")
+        # Nanti bisa connect ke ProgressBar di UI
+
+    def _on_render_finished(self, success, result):
+        if success:
+            self.sig_status_message.emit(f"✅ Export Success: {result}")
+        else:
+            self.sig_status_message.emit(f"❌ Export Failed: {result}")
 
     def add_audio_layer(self, path):
         self.add_new_layer("audio", path)

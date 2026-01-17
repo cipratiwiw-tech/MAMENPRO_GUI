@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt
 
 # Import Service yang baru kita buat
 from engine.video_service import VideoService
+from engine.video_service import PREVIEW_SERVICE # <--- Import Instance Global
 
 class VideoItem(QGraphicsPixmapItem):
     def __init__(self, layer_id, path=None):
@@ -51,19 +52,9 @@ class VideoItem(QGraphicsPixmapItem):
             self.setZValue(z_index)
 
     def sync_frame(self, global_time: float):
-        """
-        Jantung Render Item.
-        Minta gambar ke VideoService sesuai waktu saat ini.
-        """
-        # Hitung waktu relatif (Local Time)
-        # Contoh: Global 5.0s, Layer mulai di 2.0s -> Video frame ke 3.0s
         local_time = global_time - self.start_offset
-        
-        # Jangan minta frame minus (sebelum video mulai)
         if local_time < 0: local_time = 0
         
-        # Panggil Pelayan (VideoService)
-        # Ini akan mengembalikan QPixmap asli dari video!
-        pix = VideoService.get_frame(self.path, local_time)
-        
+        # Panggil Instance Global Preview
+        pix = PREVIEW_SERVICE.get_frame(self.path, local_time)
         self.setPixmap(pix)

@@ -1,66 +1,77 @@
 import cv2
-from PySide6.QtGui import QImage, QPixmap, QColor
+from PySide6.QtGui import QPixmap, QImage, QColor
 
 class VideoService:
     """
-    Singleton Service untuk decoding video.
-    Menggunakan caching reader agar tidak buka-tutup file terus menerus (berat).
+    Video Provider yang Instantiable.
+    Agar RenderWorker bisa punya cache sendiri yang tidak diganggu oleh UI Preview.
     """
-    _instance = None
-    _readers = {} # Cache: path -> cv2.VideoCapture
+    def __init__(self):
+        # Cache Reader: path -> cv2.VideoCapture
+        # Disimpan di self (instance), bukan class level
+        self._readers = {}
 
-    @staticmethod
-    def get_frame(path: str, local_time: float) -> QPixmap:
-        """
-        Mengambil frame pada detik ke-X dari file video.
-        """
-        if not path: return VideoService._get_blank_pixmap()
+    def get_frame(self, path: str, local_time: float) -> QPixmap:
+        """Mengembalikan QPixmap untuk UI Preview"""
+        img = self._get_image_data(path, local_time)
+        if img.isNull():
+            return self._get_blank_pixmap()
+        return QPixmap.fromImage(img)
 
-        # 1. Dapatkan Reader (Reuse jika sudah ada)
-        cap = VideoService._get_reader(path)
-        if not cap: return VideoService._get_blank_pixmap()
+    def get_frame_image(self, path: str, local_time: float) -> QImage:
+        """[BARU] Mengembalikan QImage murni untuk Compositor/Render (Lebih Cepat)"""
+        return self._get_image_data(path, local_time)
 
-        # 2. Hitung Frame Number
+    def _get_image_data(self, path: str, local_time: float) -> QImage:
+        if not path: return QImage()
+
+        # 1. Dapatkan Reader (Instance Scope)
+        cap = self._get_reader(path)
+        if not cap: return QImage()
+
+        # 2. Logic Seek & Read
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0: fps = 30 # Fallback
+        if fps <= 0: fps = 30
         
         target_frame = int(local_time * fps)
-        
-        # 3. Optimasi Seeking (Loncat Frame)
-        # Jika frame target == frame berikutnya, tidak perlu seek (langsung read)
-        # Jika jauh, baru seek (karena seek itu mahal/lambat)
         current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+
+        # Optimasi Seek
         if abs(target_frame - current_frame) > 1:
             cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
 
-        # 4. Baca Frame
         success, frame = cap.read()
         if not success:
-            return VideoService._get_blank_pixmap()
+            return QImage()
 
-        # 5. Konversi OpenCV (BGR) -> Qt (RGB)
-        # OpenCV pakai BGR, Qt pakai RGB. Harus dibalik.
+        # 3. Convert BGR -> RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = frame.shape
         bytes_per_line = ch * w
         
-        qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        # Kembalikan sebagai Pixmap (agar siap tampil di scene)
-        return QPixmap.fromImage(qt_image)
+        # Buat QImage (Copy data agar aman)
+        return QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
 
-    @classmethod
-    def _get_reader(cls, path):
-        if path not in cls._readers:
+    def _get_reader(self, path):
+        if path not in self._readers:
             cap = cv2.VideoCapture(path)
             if not cap.isOpened():
                 return None
-            cls._readers[path] = cap
-        return cls._readers[path]
+            self._readers[path] = cap
+        return self._readers[path]
+    
+    def release_all(self):
+        """Membersihkan resource (Penting untuk Render Worker selesai)"""
+        for cap in self._readers.values():
+            cap.release()
+        self._readers.clear()
 
     @staticmethod
     def _get_blank_pixmap():
-        # Fallback gambar hitam jika error/kosong
         pix = QPixmap(320, 180)
         pix.fill(QColor("#000000"))
         return pix
+
+# --- GLOBAL INSTANCE UNTUK UI PREVIEW ---
+# UI akan pakai ini. Render Worker akan buat instance baru ("VideoService()") sendiri.
+PREVIEW_SERVICE = VideoService()
