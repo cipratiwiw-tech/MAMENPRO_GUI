@@ -17,7 +17,7 @@ TRACK_BG_ODD = "#262a30"
 GRID_COLOR = "#3e4451"
 
 # LOGIKA WAKTU
-FPS = 30.0 # Basis perhitungan Frame & Snapping
+FPS = 30.0 
 
 class TimelineClipItem(QGraphicsRectItem):
     def __init__(self, layer_data, row_index, parent_view):
@@ -107,7 +107,7 @@ class TimelineClipItem(QGraphicsRectItem):
             final_pixel_x = self.pos().x()
             new_start_time = (final_pixel_x - TRACK_HEADER_WIDTH) / self.parent_view.zoom_level
             
-            # Snap Clip Start ke Frame juga (Opsional, tapi direkomendasikan biar konsisten)
+            # Snap Clip Start ke Frame
             new_start_time = round(new_start_time * FPS) / FPS
             
             if abs(new_start_time - self.current_start_time) > 0.001:
@@ -153,10 +153,12 @@ class LayerPanel(QGraphicsView):
         self.zoom_level = 50.0  
         self.min_zoom = 1.0     
         self.max_zoom = 600.0   
-        
         self.track_height = 50 
         self.min_track_height = 25
         self.max_track_height = 150
+        
+        # State Scrubbing
+        self._is_scrubbing = False # Flag status scrubbing ruler
 
         self.clip_registry = {}
         self.last_layers_data = [] 
@@ -177,14 +179,13 @@ class LayerPanel(QGraphicsView):
         delta = event.angleDelta().y()
 
         if modifiers == Qt.ControlModifier:
-            # === ZOOM TIMELINE ===
+            # Zoom Timeline
             factor = 1.05 if delta > 0 else 0.95
             new_zoom = max(self.min_zoom, min(self.zoom_level * factor, self.max_zoom))
             
             if new_zoom != self.zoom_level:
                 current_scroll = self.horizontalScrollBar().value()
                 viewport_width = self.viewport().width()
-                
                 view_start_time = max(0, (current_scroll - TRACK_HEADER_WIDTH) / self.zoom_level)
                 center_offset_sec = (viewport_width / 2) / self.zoom_level
                 center_time = view_start_time + center_offset_sec
@@ -195,23 +196,20 @@ class LayerPanel(QGraphicsView):
                 new_center_pixel = TRACK_HEADER_WIDTH + (center_time * self.zoom_level)
                 target_scroll = new_center_pixel - (viewport_width / 2)
                 self.horizontalScrollBar().setValue(int(target_scroll))
-            
             event.accept()
 
         elif modifiers == Qt.ShiftModifier:
-            # === RESIZE TRACK ===
+            # Resize Track
             step = 5 if delta > 0 else -5
             new_height = max(self.min_track_height, min(self.track_height + step, self.max_track_height))
-            
             if new_height != self.track_height:
                 current_v_scroll = self.verticalScrollBar().value()
                 self.track_height = new_height
                 self._refresh_layout()
                 self.verticalScrollBar().setValue(current_v_scroll)
-                
             event.accept()
         else:
-            # === SCROLL HORIZONTAL ===
+            # Scroll Horizontal
             h_bar = self.horizontalScrollBar()
             scroll_amount = -delta 
             h_bar.setValue(h_bar.value() + scroll_amount)
@@ -238,21 +236,20 @@ class LayerPanel(QGraphicsView):
     # LOGIKA RULER ADAPTIF
     # ==========================================
     def get_ruler_settings(self):
-        px_per_sec = self.zoom_level
-        
-        if px_per_sec >= 150:
-            if px_per_sec > 400: return (1.0/FPS * 5, 5, 'frame')
-            elif px_per_sec > 250: return (1.0/FPS * 10, 10, 'frame')
+        px = self.zoom_level
+        if px >= 150:
+            if px > 400: return (1.0/FPS * 5, 5, 'frame')
+            elif px > 250: return (1.0/FPS * 10, 10, 'frame')
             else: return (0.5, 5, 'frame') 
-        elif px_per_sec >= 40:
-            if px_per_sec >= 80: return (1.0, 10, 'sec')
+        elif px >= 40:
+            if px >= 80: return (1.0, 10, 'sec')
             else: return (2.0, 4, 'sec')
-        elif px_per_sec >= 10:
-             if px_per_sec >= 20: return (5.0, 5, 'sec') 
+        elif px >= 10:
+             if px >= 20: return (5.0, 5, 'sec') 
              else: return (10.0, 10, 'sec')
         else:
-            if px_per_sec >= 2: return (30.0, 6, 'min')
-            elif px_per_sec >= 0.5: return (60.0, 6, 'min')
+            if px >= 2: return (30.0, 6, 'min')
+            elif px >= 0.5: return (60.0, 6, 'min')
             else: return (300.0, 5, 'min')
 
     def format_time_label(self, seconds, fmt_type):
@@ -266,7 +263,6 @@ class LayerPanel(QGraphicsView):
             else:
                 frame_num = int(round((seconds - int(seconds)) * FPS))
                 return f"{frame_num}f"
-        
         return f"{mm:02d}:{ss:02d}"
 
     def format_time_full(self, seconds):
@@ -282,10 +278,8 @@ class LayerPanel(QGraphicsView):
         super().drawBackground(painter, rect)
         painter.fillRect(rect, QColor(TRACK_BG_ODD))
         
-        top = int(rect.top())
-        bottom = int(rect.bottom())
-        left = int(rect.left())
-        right = int(rect.right())
+        top, bottom = int(rect.top()), int(rect.bottom())
+        left, right = int(rect.left()), int(rect.right())
         th = self.track_height
         
         first_track_idx = max(0, (top - HEADER_HEIGHT) // th)
@@ -315,9 +309,7 @@ class LayerPanel(QGraphicsView):
     def drawForeground(self, painter: QPainter, rect: QRectF):
         super().drawForeground(painter, rect)
         
-        left = rect.left()
-        top = rect.top()
-        width = rect.width()
+        left, top, width = rect.left(), rect.top(), rect.width()
         
         # Ruler BG
         painter.fillRect(QRectF(left, top, width, HEADER_HEIGHT), QColor(RULER_BG))
@@ -345,9 +337,7 @@ class LayerPanel(QGraphicsView):
                 
                 label = self.format_time_label(current_t, fmt_type)
                 tw = fm.horizontalAdvance(label)
-                label_x = pos_x - tw/2
-                if label_x < TRACK_HEADER_WIDTH + 2: label_x = TRACK_HEADER_WIDTH + 5
-                
+                label_x = max(TRACK_HEADER_WIDTH + 5, pos_x - tw/2)
                 painter.drawText(label_x, top + 15, label)
                 
                 if ticks_per_major > 1:
@@ -357,18 +347,15 @@ class LayerPanel(QGraphicsView):
                     for i in range(1, ticks_per_major):
                         sub_x = pos_x + (i * minor_step_px)
                         if sub_x > end_scene_x: break
-                        tick_top = top + 32
-                        if i == ticks_per_major / 2: tick_top = top + 28
+                        tick_top = top + 28 if i == ticks_per_major/2 else top + 32
                         painter.drawLine(sub_x, tick_top, sub_x, top + HEADER_HEIGHT)
-
             current_t += major_step
 
-        # Sidebar Header
+        # Sidebar & Tracks
         painter.fillRect(QRectF(left, top + HEADER_HEIGHT, TRACK_HEADER_WIDTH, rect.height()), QColor(SIDEBAR_BG))
         painter.setPen(QPen(QColor("#000"), 1))
         painter.drawLine(left + TRACK_HEADER_WIDTH, top, left + TRACK_HEADER_WIDTH, rect.bottom())
         
-        # Track Names
         first_track_idx = max(0, (int(top) - HEADER_HEIGHT) // self.track_height)
         count = int(rect.height() // self.track_height) + 2
         painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
@@ -388,7 +375,7 @@ class LayerPanel(QGraphicsView):
         painter.drawRect(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT))
 
     # ==========================================
-    # HELPERS (Snap Playhead)
+    # HELPERS & INTERACTION (SCRUBBING)
     # ==========================================
     def sync_all_layers(self, layers: list):
         self.last_layers_data = layers
@@ -409,23 +396,43 @@ class LayerPanel(QGraphicsView):
         if x > vis.right() - 50:
              self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + 50)
 
+    def _process_seek_event(self, scene_x):
+        """Helper untuk hitung seek + snapping"""
+        raw_t = max(0, (scene_x - TRACK_HEADER_WIDTH) / self.zoom_level)
+        snapped_t = round(raw_t * FPS) / FPS
+        self.sig_request_seek.emit(snapped_t)
+        self.update_playhead(snapped_t)
+
     def mousePressEvent(self, event):
-        super().mousePressEvent(event)
         sp = self.mapToScene(event.pos())
         top_vis = self.mapToScene(0, 0).y()
         
-        # Cek klik di Ruler
+        # Cek jika klik di area RULER (Top Bar)
         if sp.y() < (top_vis + HEADER_HEIGHT) and sp.x() > TRACK_HEADER_WIDTH:
-            # 1. Hitung waktu mentah dari pixel
-            raw_t = max(0, (sp.x() - TRACK_HEADER_WIDTH) / self.zoom_level)
-            
-            # 2. SNAP KE FRAME (Pembulatan ke FPS terdekat)
-            # Contoh: 1.034s -> 1.033s (frame 31)
-            snapped_t = round(raw_t * FPS) / FPS
-            
-            # 3. Emit & Update Playhead
-            self.sig_request_seek.emit(snapped_t)
-            self.update_playhead(snapped_t)
+            self._is_scrubbing = True # Mulai Scrubbing
+            self._process_seek_event(sp.x())
+            event.accept() # Jangan diteruskan ke bawah
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # Jika sedang scrubbing ruler, update posisi terus menerus
+        if self._is_scrubbing:
+            sp = self.mapToScene(event.pos())
+            # Batasi agar tidak scrub ke kiri header
+            safe_x = max(TRACK_HEADER_WIDTH, sp.x())
+            self._process_seek_event(safe_x)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # Selesai Scrubbing
+        if self._is_scrubbing:
+            self._is_scrubbing = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     # Binder Stubs
     def add_item_visual(self, *args): pass
