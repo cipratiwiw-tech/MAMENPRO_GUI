@@ -1,91 +1,132 @@
-# canvas/video_item.py
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsItem
-from PySide6.QtGui import QPixmap, QColor, QPen
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QGraphicsItem, QWidget
+from PySide6.QtGui import QImage, QPainter, QColor, QPen
+from PySide6.QtCore import Qt, QRectF
 
-# 1. Import Service & Processor
 from engine.video_service import PREVIEW_SERVICE
 from engine.chroma_processor import ChromaProcessor
 
-class VideoItem(QGraphicsPixmapItem):
+class VideoItem(QGraphicsItem):
+    """
+    Custom Graphics Item yang merender QImage secara langsung.
+    Mendukung transparansi (Alpha Channel) penuh untuk Chroma Key.
+    """
     def __init__(self, layer_id, path=None):
         super().__init__()
         self.layer_id = layer_id
         self.path = path
         
         self.start_offset = 0.0 
+        self.duration = 5.0
         
-        # Simpan State Chroma Lokal
+        # Properti Visual
+        self.width = 1920
+        self.height = 1080
+        self.opacity = 1.0
+        
+        # Chroma State
         self.chroma_active = False
         self.chroma_color = "#00ff00"
         self.chroma_threshold = 0.15
         
+        # Buffer Gambar (Disimpan agar paint event tidak perlu decode ulang)
+        self._current_image = None
+        
+        # Flags Standar Editor
         self.setFlags(
             QGraphicsItem.ItemIsMovable | 
             QGraphicsItem.ItemIsSelectable | 
             QGraphicsItem.ItemSendsGeometryChanges
         )
-        self._load_dummy_content()
         
-    def _load_dummy_content(self):
-        pix = QPixmap(320, 180)
-        pix.fill(QColor("#333333"))
-        self.setPixmap(pix)
+        # Inisialisasi Dummy
+        self._generate_dummy()
 
-    def paint(self, painter, option, widget=None):
-        super().paint(painter, option, widget)
+    def _generate_dummy(self):
+        self._current_image = QImage(320, 180, QImage.Format_ARGB32)
+        self._current_image.fill(QColor("#333333"))
+        self.width = 320
+        self.height = 180
+        self.update() # Request Redraw
+
+    def boundingRect(self):
+        # Mendefinisikan area klik dan refresh item
+        return QRectF(0, 0, self.width, self.height)
+
+    def paint(self, painter: QPainter, option, widget: QWidget = None):
+        """
+        Fungsi penggambaran kustom.
+        Dipanggil otomatis oleh QGraphicsView setiap kali update() dipanggil.
+        """
+        # 1. Gambar Gambar Utama
+        if self._current_image and not self._current_image.isNull():
+            # Set Opacity Layer
+            painter.setOpacity(self.opacity)
+            
+            # Gambar QImage pada koordinat (0,0) item
+            # QImage yang sudah diproses ChromaProcessor memiliki Alpha channel
+            # QPainter akan otomatis memblendingnya dengan background scene
+            painter.drawImage(0, 0, self._current_image)
+
+        # 2. Gambar Garis Seleksi (UI Helper)
         if self.isSelected():
+            painter.setOpacity(1.0) # Reset opacity untuk garis
             painter.setPen(QPen(QColor("#00aaff"), 3, Qt.DashLine))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.boundingRect())
 
     def update_properties(self, props: dict, z_index: int = None):
-        # 1. Transform
+        # Update Transform (Memakai API QGraphicsItem)
         if "x" in props: self.setX(props["x"])
         if "y" in props: self.setY(props["y"])
         if "scale" in props: self.setScale(props["scale"] / 100.0)
         if "rotation" in props: self.setRotation(props["rotation"])
-        if "opacity" in props: self.setOpacity(props["opacity"])
+        if "opacity" in props: self.opacity = props["opacity"]
         
         if "start_time" in props: 
             self.start_offset = float(props["start_time"])
         
-        # 2. CHROMA UPDATE (Simpan setting ke variabel lokal)
-        if "chroma_active" in props: 
-            self.chroma_active = props["chroma_active"]
-        if "chroma_color" in props: 
-            self.chroma_color = props["chroma_color"]
-        if "chroma_threshold" in props: 
-            self.chroma_threshold = float(props["chroma_threshold"])
+        # Update Chroma Settings
+        if "chroma_active" in props: self.chroma_active = props["chroma_active"]
+        if "chroma_color" in props: self.chroma_color = props["chroma_color"]
+        if "chroma_threshold" in props: self.chroma_threshold = float(props["chroma_threshold"])
         
-        # 3. Z-Index
         if z_index is not None:
             self.setZValue(z_index)
             
-        # [PENTING] Force refresh visual saat properti berubah (agar efek langsung terlihat)
-        # Kita panggil sync_frame dengan waktu "dummy" atau current time dari engine kalau bisa
-        # Di sini kita biarkan preview engine yang memanggil sync_frame via timer
+        self.update() # Memicu paint()
 
     def sync_frame(self, global_time: float):
         """
-        Render Frame + Efek Realtime
+        Dipanggil oleh PreviewPanel saat scrubbing/play.
         """
         local_time = global_time - self.start_offset
         if local_time < 0: local_time = 0
         
-        # A. Minta QImage (Data Mentah) bukan QPixmap
-        # Kita butuh pixel data untuk diproses OpenCV
+        # A. Ambil Image Raw
         qimg = PREVIEW_SERVICE.get_frame_image(self.path, local_time)
         
         if qimg.isNull(): return
 
-        # B. Terapkan Chroma Key Jika Aktif
+        # B. Terapkan Chroma Key (Proses di CPU sebelum Paint)
         if self.chroma_active:
             qimg = ChromaProcessor.process_qimage(
                 qimg, 
                 self.chroma_color, 
                 self.chroma_threshold
             )
+            
+        # C. Simpan ke Buffer & Trigger Repaint
+        self._current_image = qimg
         
-        # C. Konversi ke QPixmap untuk Tampil di Layar
-        self.setPixmap(QPixmap.fromImage(qimg))
+        # Jika ukuran video berubah (jarang, tapi mungkin), update bounding rect
+        if self.width != qimg.width() or self.height != qimg.height():
+            self.prepareGeometryChange() # Memberitahu scene ukuran berubah
+            self.width = qimg.width()
+            self.height = qimg.height()
+        
+        self.update() # Memicu pemanggilan method paint() di atas
+        
+    # Helper kompatibilitas
+    def update_time(self, current_time):
+        end_time = self.start_offset + self.duration
+        self.setVisible(self.start_offset <= current_time < end_time)

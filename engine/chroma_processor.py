@@ -4,65 +4,72 @@ from PySide6.QtGui import QImage
 
 class ChromaProcessor:
     @staticmethod
-    def process_qimage(qimage: QImage, hex_color: str, threshold: float) -> QImage:
+    def process_qimage(qimage: QImage, hex_color: str, threshold: float, softness: float = 0.1) -> QImage:
         """
-        Menghapus background warna tertentu dari QImage.
-        Menggunakan OpenCV (NumPy) agar performa Realtime.
+        HSV-based Chroma Key dengan Strict Memory Copy & Direct Alpha Assignment.
         """
         if qimage.isNull(): return qimage
 
-        # 1. Konversi QImage (RGB) -> NumPy Array
-        # QImage Format harus RGB888 agar kompatibel
-        qimage = qimage.convertToFormat(QImage.Format_RGB888)
+        # 1. Pastikan Format RGBA 
+        qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
         width = qimage.width()
         height = qimage.height()
 
-        ptr = qimage.constBits()
-        # Buat view numpy langsung ke memori QImage (Cepat!)
-        arr = np.array(ptr).reshape(height, width, 3) # RGB format
-
-        # 2. Parse Target Color (Hex -> RGB)
-        target_color = ChromaProcessor._hex_to_rgb(hex_color)
+        # 2. Akses Memori Pixel (Shared Memory)
+        ptr = qimage.bits() 
+        arr = np.array(ptr).reshape(height, width, 4) 
         
-        # 3. Buat Masking (Range Warna)
-        # Threshold (0.0 - 1.0) dikonversi ke Range Pixel (0 - 255)
-        thresh_val = int(threshold * 100) # Scale up sensitivity
+        # 3. Konversi ke HSV
+        img_rgb = cv2.cvtColor(arr, cv2.COLOR_RGBA2RGB)
+        img_hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
+
+        # 4. Target Color
+        target_rgb = ChromaProcessor._hex_to_rgb(hex_color)
+        target_pixel = np.uint8([[target_rgb]]) 
+        target_hsv = cv2.cvtColor(target_pixel, cv2.COLOR_RGB2HSV)[0][0]
+        h_target = int(target_hsv[0])
+
+        # 5. Adaptive Hue Tolerance
+        hue_tol = int(15 + threshold * 45) 
         
-        # Batas Bawah & Atas warna yang akan dihapus
-        lower_bound = np.array([
-            max(0, target_color[0] - thresh_val),
-            max(0, target_color[1] - thresh_val),
-            max(0, target_color[2] - thresh_val)
-        ])
-        upper_bound = np.array([
-            min(255, target_color[0] + thresh_val),
-            min(255, target_color[1] + thresh_val),
-            min(255, target_color[2] + thresh_val)
-        ])
-
-        # 4. Deteksi area warna (Masking)
-        mask = cv2.inRange(arr, lower_bound, upper_bound)
-
-        # 5. Alpha Channel Trick
-        # Kita butuh output RGBA (agar transparan).
-        # Tambahkan channel Alpha ke array RGB
-        r, g, b = cv2.split(arr)
+        lower_h = np.array([max(0, h_target - hue_tol), 40, 40])
+        upper_h = np.array([min(179, h_target + hue_tol), 255, 255])
         
-        # Mask bernilai 255 (Putih) di area Hijau. 
-        # Kita ingin Alpha = 0 di area Hijau, dan 255 di area lain.
-        # Jadi kita Invert mask-nya.
-        alpha = cv2.bitwise_not(mask)
+        # 6. Masking
+        mask = cv2.inRange(img_hsv, lower_h, upper_h)
 
-        # Gabungkan lagi: R, G, B, Alpha
-        rgba = cv2.merge([r, g, b, alpha])
+        if softness > 0:
+            k_size = int(softness * 10) | 1 
+            if k_size > 1:
+                mask = cv2.GaussianBlur(mask, (k_size, k_size), 0)
 
-        # 6. Kembalikan ke QImage
-        # Format ARGB32 lebih aman untuk QPainter nanti
-        output_qimage = QImage(rgba.data, width, height, QImage.Format_RGBA8888).copy()
+        # 7. Alpha Calculation (Invert)
+        # Putih (255) = Objek, Hitam (0) = Transparan
+        alpha_mask = cv2.bitwise_not(mask)
         
-        return output_qimage
+        # ✅ FIX #1: SET ALPHA LANGSUNG (Overwrite)
+        # Jangan di-AND dengan alpha lama. Kita mau 'bolongin' gambar ini.
+        arr[:, :, 3] = alpha_mask.astype(np.uint8)
+
+        # 8. Spill Suppression
+        spill_area = (mask > 10) 
+        arr[:, :, 1][spill_area] = np.clip(arr[:, :, 1][spill_area] * 0.7, 0, 255).astype(np.uint8)
+
+        # ✅ FIX #2: DEEP COPY & RECREATE QIMAGE
+        # Kita buat QImage baru dari buffer array yang sudah dimodifikasi.
+        # .copy() MEMUTUS hubungan dengan memori lama -> Qt dipaksa render ulang.
+        out_image = QImage(
+            arr.data,
+            width,
+            height,
+            width * 4,
+            QImage.Format_RGBA8888
+        ).copy() 
+
+        return out_image
 
     @staticmethod
     def _hex_to_rgb(hex_str):
         hex_str = hex_str.lstrip('#')
+        if len(hex_str) != 6: return (0, 255, 0)
         return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
