@@ -206,12 +206,15 @@ class LayerPanel(QGraphicsView):
         self.zoom_level = 50.0  
         self.min_zoom = 1.0     
         self.max_zoom = 600.0   
-        self.track_height = 50 
-        self.min_track_height = 25
-        self.max_track_height = 150
+        self.track_height = 25 
+        self.min_track_height = 18
+        self.max_track_height = 25
         
         self._is_scrubbing = False 
-        self._max_visual_row = 10 
+        self._max_visual_row = 6 
+        
+        # [BARU] Simpan waktu saat ini untuk sinkronisasi zoom
+        self.current_time = 0.0
 
         self.clip_registry = {}
         self.last_layers_data = [] 
@@ -276,22 +279,36 @@ class LayerPanel(QGraphicsView):
         delta = event.angleDelta().y()
 
         if modifiers == Qt.ControlModifier:
-            # Zoom Timeline
+            # 1. Zoom Timeline (Anchor Under Mouse)
             factor = 1.05 if delta > 0 else 0.95
             new_zoom = max(self.min_zoom, min(self.zoom_level * factor, self.max_zoom))
+
             if new_zoom != self.zoom_level:
-                current_scroll = self.horizontalScrollBar().value()
-                viewport_width = self.viewport().width()
-                view_start_time = max(0, (current_scroll - TRACK_HEADER_WIDTH) / self.zoom_level)
-                center_offset_sec = (viewport_width / 2) / self.zoom_level
-                center_time = view_start_time + center_offset_sec
+                # A. Hitung Waktu di Bawah Mouse (Sebelum Zoom)
+                # Rumus: SceneX = ViewportX + ScrollX
+                #        Time   = (SceneX - HeaderWidth) / OldZoom
+                viewport_x = event.position().x()
+                scroll_x = self.horizontalScrollBar().value()
+                scene_x_old = scroll_x + viewport_x
+                
+                time_under_mouse = (scene_x_old - TRACK_HEADER_WIDTH) / self.zoom_level
+
+                # B. Terapkan Zoom Baru
                 self.zoom_level = new_zoom
                 self._refresh_layout()
-                new_center_pixel = TRACK_HEADER_WIDTH + (center_time * self.zoom_level)
-                target_scroll = new_center_pixel - (viewport_width / 2)
-                self.horizontalScrollBar().setValue(int(target_scroll))
+
+                # C. Hitung Posisi Scroll Baru (Agar Waktu tsb tetap di posisi mouse)
+                # Rumus: NewSceneX = HeaderWidth + (Time * NewZoom)
+                #        NewScroll = NewSceneX - ViewportX
+                new_scene_x = TRACK_HEADER_WIDTH + (time_under_mouse * self.zoom_level)
+                new_scroll_x = int(new_scene_x - viewport_x)
+
+                self.horizontalScrollBar().setValue(new_scroll_x)
+
             event.accept()
+
         elif modifiers == Qt.ShiftModifier:
+            # Resize Track Height (Logika Lama Tetap Aman)
             step = 5 if delta > 0 else -5
             new_height = max(self.min_track_height, min(self.track_height + step, self.max_track_height))
             if new_height != self.track_height:
@@ -300,11 +317,16 @@ class LayerPanel(QGraphicsView):
                 self._refresh_layout()
                 self.verticalScrollBar().setValue(current_v_scroll)
             event.accept()
-        else:
-            h_bar = self.horizontalScrollBar()
-            h_bar.setValue(h_bar.value() - delta)
-            event.accept()
 
+        else:
+            # Standard Scroll (Context Aware: Header vs Track)
+            mouse_x = event.position().x()
+            if mouse_x < TRACK_HEADER_WIDTH:
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta)
+            else:
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta)
+            event.accept()
+            
     def _refresh_layout(self):
         for clip in self.clip_registry.values():
             clip.update_geometry()
@@ -324,13 +346,19 @@ class LayerPanel(QGraphicsView):
              if r > max_visual_row: max_visual_row = r
 
         self._max_visual_row = max(self._max_visual_row, max_visual_row)
-        total_tracks = self._max_visual_row + 10 # Buffer lebih banyak
+        total_tracks = self._max_visual_row + 1 # Buffer lebih banyak
         
+        # [UBAH BAGIAN AKHIR METHOD INI]
         width = TRACK_HEADER_WIDTH + (max(30.0, max_duration) * self.zoom_level) + 1000 
         height = HEADER_HEIGHT + (total_tracks * self.track_height) + 200
         
         self.scene.setSceneRect(0, 0, width, height)
         self.playhead.setLine(0, HEADER_HEIGHT, 0, height)
+        
+        # [BARU] Paksa Playhead menempel ke posisi waktu yang benar saat Zoom
+        new_playhead_x = TRACK_HEADER_WIDTH + (self.current_time * self.zoom_level)
+        self.playhead.setX(new_playhead_x)
+        
         self.viewport().update()
 
     # ==========================================
@@ -491,6 +519,8 @@ class LayerPanel(QGraphicsView):
         self._refresh_layout()
 
     def update_playhead(self, t: float):
+        self.current_time = t  # [BARU] Update state waktu
+        
         x = TRACK_HEADER_WIDTH + (t * self.zoom_level)
         self.playhead.setX(x)
         vis = self.mapToScene(self.viewport().rect()).boundingRect()
