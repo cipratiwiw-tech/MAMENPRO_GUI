@@ -1,86 +1,91 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTabWidget)
-from PySide6.QtCore import Signal
-from gui.panels.media_panel import MediaPanel
-from gui.panels.text_panel import TextTab
-from gui.panels.caption_panel import CaptionTab
-from gui.right_panel.bulk_tab import BulkTab
+# gui/right_panel/setting_panel.py
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, 
+                             QGridLayout, QLabel, QSpinBox, QDoubleSpinBox)
+from PySide6.QtCore import Signal, Qt
 
 class SettingPanel(QWidget):
-    on_setting_change = Signal(dict)
-    sig_bulk_requested = Signal(dict)
-    
-    def __init__(self, controller):
-        super().__init__()
-        
-        # [UPGRADE] Set batas minimal dan maksimal
-        # Agar panel kanan tidak pernah kurang dari 340px (mencegah clipping)
-        # Dan tidak lebih dari 450px (mencegah terlalu lebar)
-        self.setMinimumWidth(340)
-        self.setMaximumWidth(450)
-        
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Inisialisasi Tab Widget
-        self.tabs = QTabWidget()
-        
-        # Inisialisasi Konten Tab
-        self.media_tab = MediaPanel(controller)
-        self.text_tab = TextTab()
-        self.caption_tab = CaptionTab()
-        self.bulk_tab = BulkTab()
-        
-        self.text_tab.sig_text_changed.connect(self._on_text_changed)
+    # Sinyal saat user mengedit nilai (UI -> Logic)
+    sig_property_changed = Signal(dict) 
 
-        # Menambahkan Tab ke Widget
-        self.tabs.addTab(self.media_tab, "Media/Frame")
-        self.tabs.addTab(self.text_tab, "Text/Para")
-        self.tabs.addTab(self.caption_tab, "Caption")        
-        self.tabs.addTab(self.bulk_tab, "Bulk")
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
+        self._block_signals = False # Flag untuk mencegah feedback loop visual
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
         
-        self.layout.addWidget(self.tabs)
-        self._connect_signals()
+        # --- Transform Group ---
+        group = QGroupBox("TRANSFORM")
+        group.setStyleSheet("QGroupBox { font-weight: bold; color: #61afef; border: 1px solid #3e4451; margin-top: 20px; }")
+        grid = QGridLayout(group)
+
+        # X Position
+        self.spin_x = self._create_spinbox(-3000, 3000, " px")
+        grid.addWidget(QLabel("X:"), 0, 0)
+        grid.addWidget(self.spin_x, 0, 1)
+
+        # Y Position
+        self.spin_y = self._create_spinbox(-3000, 3000, " px")
+        grid.addWidget(QLabel("Y:"), 1, 0)
+        grid.addWidget(self.spin_y, 1, 1)
+
+        # Scale
+        self.spin_scale = self._create_spinbox(1, 1000, " %")
+        grid.addWidget(QLabel("Scale:"), 2, 0)
+        grid.addWidget(self.spin_scale, 2, 1)
         
-    def _on_text_changed(self, data: dict):
-        # sementara lempar ke controller (stub aman)
-        if hasattr(self.controller, "on_text_changed"):
-            self.controller.on_text_changed(data)
+        # Rotation
+        self.spin_rot = self._create_spinbox(-360, 360, " °")
+        grid.addWidget(QLabel("Rotation:"), 3, 0)
+        grid.addWidget(self.spin_rot, 3, 1)
 
+        layout.addWidget(group)
+        layout.addStretch()
 
-    def _connect_signals(self):
-        # [FIX] Gunakan sinyal terpadu dari Tab
-        self.media_tab.sig_media_changed.connect(self._emit_media_change)
-        self.text_tab.sig_text_changed.connect(self._emit_text_change)
-        self.bulk_tab.sig_start_bulk.connect(self.sig_bulk_requested.emit)
+        # Connect internal signals
+        self.spin_x.valueChanged.connect(self._on_value_changed)
+        self.spin_y.valueChanged.connect(self._on_value_changed)
+        self.spin_scale.valueChanged.connect(self._on_value_changed)
+        self.spin_rot.valueChanged.connect(self._on_value_changed)
 
-    def _emit_media_change(self, data):
-        pass
+    def _create_spinbox(self, min_val, max_val, suffix):
+        sb = QSpinBox()
+        sb.setRange(min_val, max_val)
+        sb.setSuffix(suffix)
+        sb.setStyleSheet("background-color: #2c313a; border: 1px solid #3e4451; padding: 4px;")
+        return sb
 
-    def _emit_text_change(self, data):
-        """Membungkus data text dengan type tag sebelum di-emit"""
-        data["type"] = "text"
-        self.on_setting_change.emit(data)
+    def _on_value_changed(self):
+        if self._block_signals: return
 
-    def set_values(self, data):
-        """Mengirim data ke tab yang sesuai untuk update UI"""
-        # Tab akan memfilter data yang relevan secara internal
-        self.media_tab.set_values(data)
-        self.text_tab.set_values(data)
+        # Bungkus data dalam dict
+        data = {
+            "x": self.spin_x.value(),
+            "y": self.spin_y.value(),
+            "scale": self.spin_scale.value(),
+            "rotation": self.spin_rot.value()
+        }
+        self.sig_property_changed.emit(data)
 
-    def set_active_tab_by_type(self, content_type):
-        """
-        Dipanggil dari MainController saat item di timeline/list diklik.
-        Mengatur tab mana yang aktif berdasarkan tipe konten.
-        """
-        if content_type == "media":
-            self.tabs.setCurrentWidget(self.media_tab)
-            
-        elif content_type == "text":
-            self.tabs.setCurrentWidget(self.text_tab)
+    # --- PERINTAH DARI BINDER (LOGIC -> UI) ---
+    def update_form_visual(self, props: dict):
+        """Update tampilan form tanpa memicu sinyal balik"""
+        self._block_signals = True # Cegah loop: Controller -> UI -> Controller
         
-        # [BARU] Arahkan ke Caption Tab
-        elif content_type == "caption_preview":
-            self.tabs.setCurrentWidget(self.caption_tab)
-            
-        elif content_type == "bulk":
-             self.tabs.setCurrentWidget(self.bulk_tab)
+        if "x" in props: self.spin_x.setValue(int(props["x"]))
+        if "y" in props: self.spin_y.setValue(int(props["y"]))
+        if "scale" in props: self.spin_scale.setValue(int(props["scale"]))
+        if "rotation" in props: self.spin_rot.setValue(int(props["rotation"]))
+        
+        self._block_signals = False
+        
+    def clear_form(self):
+        self._block_signals = True
+        self.spin_x.setValue(0)
+        self.spin_y.setValue(0)
+        self.spin_scale.setValue(100)
+        self.spin_rot.setValue(0)
+        self._block_signals = False
