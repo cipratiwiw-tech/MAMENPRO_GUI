@@ -59,11 +59,15 @@ class EditorBinder(QObject):
             self.c.load_project(path)
 
     def _on_layer_cleared(self):
-        # Bersihkan visual list dan canvas
-        self.ui.layer_panel.list_widget.clear()
-        self.ui.layer_panel._id_map.clear()
-        self.ui.preview_panel.scene.clear()
-        self.ui.preview_panel.visual_registry.clear()
+        # UI List: Bersihkan via method resmi (yang sudah kita buat sebelumnya)
+        self.ui.layer_panel.clear_visual()
+        
+        # Preview: Bersihkan via method resmi [UPDATED]
+        self.ui.preview_panel.clear_visual()
+        
+        # Reset form properties
+        self.ui.setting_panel.clear_form()
+        self.ui.text_panel.set_values({})
         
     # ... (Glue methods lain _on_layer_created dll TETAP SAMA) ...
     def _on_layer_created(self, layer_data):

@@ -91,3 +91,10 @@ class PreviewPanel(QGraphicsView):
         # Trigger refresh scene
         self.scene.update()
         print("[PREVIEW] Z-Indexes updated.")
+        
+    # [BARU] API Resmi untuk Binder
+    def clear_visual(self):
+        """Membersihkan seluruh scene dan registry visual."""
+        self.scene.clear()
+        self.visual_registry.clear()
+        print("[PREVIEW] Visual cleared.")
