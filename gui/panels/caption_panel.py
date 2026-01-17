@@ -53,9 +53,16 @@ class CaptionPanel(QWidget):
         layout.addWidget(self.btn_generate)
 
     def _on_generate_click(self):
-        # Bungkus config
+        self.btn_generate.setText("⏳ Processing...")
+        self.btn_generate.setEnabled(False) # Cegah spam klik
+        
         config = {
             "language": self.combo_lang.currentText().lower(),
             "max_words": self.spin_words.value()
         }
         self.sig_request_caption.emit(config)
+
+    # Tambahkan method ini untuk dipanggil Binder saat selesai
+    def on_process_finished(self):
+        self.btn_generate.setText("🎙️ Generate Captions")
+        self.btn_generate.setEnabled(True)
