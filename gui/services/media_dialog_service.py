@@ -4,22 +4,20 @@ from PySide6.QtWidgets import QFileDialog
 
 class MediaDialogService:
     @staticmethod
-    def open_import_dialog(parent):
+    def get_media_file(parent_widget):
         """
-        Membuka dialog untuk memilih file media (Video/Image).
-        Returns: dict {'path': str, 'type': str} atau None
+        Membuka dialog native OS.
+        Returns: dict {'type': 'video'|'image', 'path': str} or None
         """
-        filters = "Media Files (*.mp4 *.mov *.avi *.png *.jpg *.jpeg *.webp);;Video (*.mp4 *.mov *.avi);;Image (*.png *.jpg *.jpeg *.webp)"
-        file_path, _ = QFileDialog.getOpenFileName(parent, "Import Media", "", filters)
+        path, _ = QFileDialog.getOpenFileName(
+            parent_widget, 
+            "Import Media", 
+            "", 
+            "Media Files (*.mp4 *.jpg *.png *.avi *.mov)"
+        )
         
-        if file_path:
-            # Deteksi tipe sederhana berdasarkan ekstensi
-            ext = os.path.splitext(file_path)[1].lower()
-            media_type = "video" if ext in ['.mp4', '.mov', '.avi'] else "image"
-            
-            return {
-                "path": file_path,
-                "type": media_type,
-                "name": os.path.basename(file_path)
-            }
+        if path:
+            ext = os.path.splitext(path)[1].lower()
+            ftype = "video" if ext in ['.mp4', '.avi', '.mov'] else "image"
+            return {"type": ftype, "path": path}
         return None

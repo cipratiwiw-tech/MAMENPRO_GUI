@@ -1,32 +1,40 @@
 # gui/panels/media_panel.py
-from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout
-from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QWidget, QPushButton, QVBoxLayout, QLabel
+from PySide6.QtCore import Signal, Qt
 from gui.services.media_dialog_service import MediaDialogService
 
 class MediaPanel(QWidget):
-    # Sinyal keluar: (tipe_layer, path_file)
+    # Signal: type, path
     sig_request_import = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
         
-        # UI Setup
-        self.btn_import = QPushButton("📂 Import Media")
-        self.btn_import.setStyleSheet("""
-            QPushButton { background-color: #3a0ca3; color: white; padding: 10px; font-weight: bold; border-radius: 4px; }
+        # Title
+        lbl = QLabel("MEDIA LIBRARY")
+        lbl.setStyleSheet("font-weight: bold; color: #56b6c2;")
+        layout.addWidget(lbl)
+
+        # Import Button
+        btn = QPushButton("📂 Import File")
+        btn.setStyleSheet("""
+            QPushButton { background-color: #3a0ca3; padding: 10px; border-radius: 4px; color: white; font-weight: bold;}
             QPushButton:hover { background-color: #4361ee; }
         """)
-        self.btn_import.clicked.connect(self._on_import_clicked)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.btn_import)
+        btn.clicked.connect(self._on_import_clicked)
+        layout.addWidget(btn)
+        
         layout.addStretch()
 
     def _on_import_clicked(self):
-        # 1. Panggil Service untuk buka dialog (UI Logic)
-        result = MediaDialogService.open_import_dialog(self)
+        # 1. Panggil Service (UI Helper)
+        data = MediaDialogService.get_media_file(self)
         
-        # 2. Jika user pilih file, lempar Sinyal (Event)
-        if result:
-            # Kirim 'video'/'image' dan path ke Binder
-            self.sig_request_import.emit(result['type'], result['path'])
+        # 2. Jika ada hasil, Emit Signal (Hanya meneruskan data)
+        if data:
+            self.sig_request_import.emit(data['type'], data['path'])
