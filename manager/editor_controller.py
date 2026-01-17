@@ -31,26 +31,31 @@ class EditorController(QObject):
     sig_layers_reordered = Signal(list)
     
     # [ORCHESTRATOR SIGNAL] 
+    # Param 1: Clean Time (float derived from frame), Param 2: Active IDs
     sig_preview_update = Signal(float, list) 
 
     def __init__(self):
         super().__init__()
         self.state = ProjectState()
         
-        # 1. CORE VIDEO SERVICE (Shared Instance)
+        # 1. CORE SOURCE OF TRUTH (FRAME INDEX & FPS)
+        self.current_frame = 0
+        self.fps = 30.0  # Default fallback, dynamic source
+        
+        # 2. CORE VIDEO SERVICE (Shared Instance)
         self.video_service = VideoService()
 
-        # 2. INIT ENGINES
+        # 3. INIT ENGINES
         self.timeline = TimelineEngine()       
         self.preview_engine = PreviewEngine()  
         self.render_service = RenderService()  
         
-        # 3. SERVICES
+        # 4. SERVICES
         self.tpl_service = TemplateService()
         self.io_service = ProjectIOService()
         self.cap_service = CaptionService()
         
-        # 4. WIRING
+        # 5. WIRING
         self.preview_engine.sig_tick.connect(self._on_engine_tick)
         self.preview_engine.sig_playback_state.connect(self._on_playback_state)
         
@@ -58,164 +63,204 @@ class EditorController(QObject):
         self.cap_service.sig_fail.connect(self._on_caption_error)
 
     # =========================================================================
-    # CORE LOOP & PREVIEW
+    # 🧠 THE GOLDEN PRINCIPLES (TIME <-> FRAME)
     # =========================================================================
+    
+    def time_to_frame(self, time_sec: float) -> int:
+        """Mengubah waktu kotor (input user/timer) menjadi Frame Index (kebenaran)."""
+        if time_sec < 0: return 0
+        return round(time_sec * self.fps) # <--- Pakai self.fps
+
+    def frame_to_time(self, frame: int) -> float:
+        """Menghitung waktu bersih berdasarkan Frame Index."""
+        if self.fps <= 0: return 0.0
+        return frame / float(self.fps) # <--- Pakai self.fps
+
+    # =========================================================================
+    # CORE LOOP (FRAME DRIVEN)
+    # =========================================================================
+
     def _on_engine_tick(self, t: float):
-        # 1. Ambil Layer ID yang aktif di detik ke-t dari Timeline Engine
-        active_models = self.timeline.get_active_layers(t)
+        """
+        Handler saat PreviewEngine 'berdetak'.
+        Kita bajak waktunya, konversi ke Frame Index, baru broadcast.
+        """
+        # 1. Update Truth (Frame Index)
+        self.current_frame = self.time_to_frame(t)
+        
+        # 2. Derive Clean Time (Untuk UI & Timeline Query)
+        # Ini menjamin waktu selalu kelipatan sempurna (contoh: 0.033333, 0.066666)
+        clean_time = self.frame_to_time(self.current_frame)
+        
+        # 3. Query Timeline dengan Waktu Bersih
+        active_models = self.timeline.get_active_layers(clean_time)
         active_ids = [l.id for l in active_models]
         
-        # 2. Kirim ke Binder -> UI
-        # UI akan menggunakan ID ini untuk minta frame ke VideoService
-        self.sig_preview_update.emit(t, active_ids)
+        # 4. Broadcast (VideoService & UI akan terima waktu yang 100% konsisten)
+        self.sig_preview_update.emit(clean_time, active_ids)
+
+    def seek_to(self, t: float):
+        """
+        Scrubbing Logic: User minta waktu T (float).
+        Kita bulatkan ke Frame terdekat, lalu paksa Engine ke sana.
+        """
+        # 1. Konversi Input User -> Frame Truth
+        target_frame = self.time_to_frame(t)
+        
+        # 2. Update State
+        self.current_frame = target_frame
+        
+        # 3. Hitung Waktu Bersih
+        clean_time = self.frame_to_time(self.current_frame)
+        
+        # 4. Paksa Engine sinkron ke Waktu Bersih
+        self.preview_engine.seek(clean_time)
+        
+        # 5. Force Visual Update (Manual Tick)
+        # Gunakan logika frame yang sama persis
+        active_models = self.timeline.get_active_layers(clean_time)
+        active_ids = [l.id for l in active_models]
+        self.sig_preview_update.emit(clean_time, active_ids)
+
+    def toggle_play(self):
+        total_dur = self.timeline.get_total_duration()
+        self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
+        self.preview_engine.toggle_play()
 
     def _on_playback_state(self, is_playing: bool):
         state = "▶️ PLAYING" if is_playing else "⏸️ PAUSED"
         self.sig_status_message.emit(state)
 
-    def toggle_play(self):
-        # Pastikan durasi preview engine update sesuai timeline
-        total_dur = self.timeline.get_total_duration()
-        self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
-        self.preview_engine.toggle_play()
-        
-    def seek_to(self, t: float):
-        # Force update preview ke waktu t
-        self.preview_engine.seek(t)
-        # Manual trigger tick agar UI langsung update saat scrubbing/seek
-        self._on_engine_tick(self.preview_engine.current_time)
-
     # =========================================================================
-    # CRUD LAYERS (CORE FLOW LOGIC)
+    # CRUD LAYERS
     # =========================================================================
 
     def add_new_layer(self, layer_type, path=None):
-        """Entry point dari UI untuk menambah layer baru"""
         new_id = str(uuid.uuid4())[:8]
         name = f"{layer_type.upper()} {len(self.state.layers) + 1}"
         
-        # Buat Data Murni
         layer_data = LayerData(id=new_id, type=layer_type, name=name, path=path)
         
-        # Default properties agar tidak 'zonk'
         if layer_type == 'text':
             layer_data.properties['text_content'] = "New Text"
         
         self._insert_layer(layer_data)
 
     def _insert_layer(self, layer_data: LayerData):
-        """Internal logic untuk memasukkan layer ke sistem"""
-        # 1. Register Source ke VideoService (PENTING AGAR TIDAK BLANK)
+        # 1. Register Source
         if layer_data.type in ['video', 'image', 'audio'] and layer_data.path:
             if os.path.exists(layer_data.path):
+                # Register media ke VideoService
                 self.video_service.register_source(layer_data.id, layer_data.path)
+
+                # Jika video, ambil FPS dari media (dinamis)
+                if layer_data.type == "video":
+                    get_fps = getattr(self.video_service, "get_fps", None)
+                    if callable(get_fps):
+                        detected_fps = get_fps(layer_data.id)
+                        if detected_fps and detected_fps > 0:
+                            self.fps = float(detected_fps)
             else:
+                # Path ada tapi file tidak ditemukan
                 self.sig_status_message.emit(f"⚠️ File not found: {layer_data.path}")
 
         # 2. Update State
         self.state.add_layer(layer_data)
-        
-        # 3. Update Timeline Engine
+
+        # 3. Update Timeline
         self._sync_layer_to_timeline(layer_data)
-        
+
         # 4. Notify UI
         self.sig_layer_created.emit(layer_data)
         self.select_layer(layer_data.id)
-        
-        # 5. FORCE UPDATE PREVIEW (Anti-Zonk)
-        # Langsung seek ke start_time layer agar user melihat hasilnya
+
+        # 5. FORCE PREVIEW (Using Frame Logic)
         start_t = float(layer_data.properties.get("start_time", 0.0))
         self.seek_to(start_t)
-        
+
         self.sig_status_message.emit(f"✅ Layer Added: {layer_data.name}")
 
     def _sync_layer_to_timeline(self, layer_data: LayerData):
-        """Konversi Data -> Model Timeline"""
         self.timeline.remove_layer(layer_data.id)
         
         start = float(layer_data.properties.get("start_time", 0.0))
         duration = float(layer_data.properties.get("duration", 5.0))
         
+        # Pastikan durasi minimal 1 frame (Safe Division)
+        min_dur = 1.0 / self.fps if self.fps > 0 else 0.033
+        if duration < min_dur: duration = min_dur
+
         model = LayerModel(
+            # ... (kode pembuatan model sama persis) ...
             id=layer_data.id,
             type=layer_data.type,
             time=TimeRange(start, start + duration),
             z_index=layer_data.z_index,
-            payload=layer_data.properties  # Kirim semua properties ke payload
+            payload=layer_data.properties
         )
-        # Payload khusus untuk path (penting buat render engine)
         if layer_data.path:
             model.payload["path"] = layer_data.path
 
         self.timeline.add_layer(model)
         
-        # Update durasi preview engine
         total_dur = self.timeline.get_total_duration()
         self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
 
     def move_layer_time(self, layer_id: str, new_start_time: float):
         if new_start_time < 0: new_start_time = 0.0
         
-        # Update property
+        # Snap posisi layer ke frame grid juga agar rapi
+        frame_start = self.time_to_frame(new_start_time)
+        clean_start_time = self.frame_to_time(frame_start)
+        
         self.state.selected_layer_id = layer_id
-        props = {"start_time": new_start_time}
+        props = {"start_time": clean_start_time}
         self.update_layer_property(props)
         
-        # Feedback visual instant
-        self.seek_to(new_start_time)
+        # Instant feedback
+        self.seek_to(clean_start_time)
 
     def delete_current_layer(self):
         current_id = self.state.selected_layer_id
         if current_id:
-            # 1. Cleanup Service
             self.video_service.unregister_source(current_id)
-
-            # 2. Cleanup Engines
             self.timeline.remove_layer(current_id)
             self.state.remove_layer(current_id)
-            
-            # 3. Notify UI
             self.sig_layer_removed.emit(current_id)
             self.select_layer(None)
             
-            # 4. Refresh Preview
-            self._on_engine_tick(self.preview_engine.current_time)
+            # Refresh dengan frame sekarang
+            clean_time = self.frame_to_time(self.current_frame)
+            self.seek_to(clean_time)
             self.sig_status_message.emit("🗑️ Layer Deleted")
 
     # =========================================================================
-    # STATE MANAGEMENT (SAVE/LOAD)
+    # STATE MANAGEMENT
     # =========================================================================
 
     def load_project(self, path):
         self.sig_status_message.emit("📂 Loading Project...")
         
-        # 1. Load Data Murni
         layers = self.io_service.load_project(path)
         if layers is None:
             self.sig_status_message.emit("❌ Failed to load project")
             return
 
-        # 2. Reset Total System
         self.preview_engine.pause()
         self.state.layers.clear()
         self.timeline.clear()
-        self.video_service.release_all() # Reset cache video
-        self.sig_layer_cleared.emit() # Bersihkan UI
+        self.video_service.release_all()
+        self.sig_layer_cleared.emit()
+        self.current_frame = 0 # Reset frame counter
         
-        # 3. Reconstruct
         for l in layers:
-            # Kita panggil internal insert agar ID dari file tetap terjaga
-            # JANGAN panggil add_new_layer karena itu bikin ID baru
             self._insert_layer(l)
             
-        # 4. Reset View
         self.seek_to(0.0)
         self.sig_status_message.emit("✅ Project Loaded Successfully")
 
     def save_project(self, path=None):
-        if not path:
-            self.sig_status_message.emit("⚠️ Save path invalid")
-            return
+        if not path: return
         if self.io_service.save_project(self.state, path):
             self.sig_status_message.emit(f"💾 Project Saved: {os.path.basename(path)}")
         else:
@@ -227,11 +272,11 @@ class EditorController(QObject):
     
     def process_render(self, config):
         if self.timeline.get_total_duration() <= 0:
-            self.sig_status_message.emit("❌ Timeline is empty! Cannot render.")
+            self.sig_status_message.emit("❌ Timeline is empty!")
             return
             
         self.sig_status_message.emit("⏳ Preparing Render...")
-        self.preview_engine.pause() # Stop preview biar gak rebutan resource
+        self.preview_engine.pause()
         
         success, worker_or_msg = self.render_service.start_render_process(self.timeline, config)
         
@@ -247,13 +292,11 @@ class EditorController(QObject):
         self.sig_status_message.emit(f"Rendering: {val}%")
 
     def _on_render_finished(self, success, result):
-        if success:
-            self.sig_status_message.emit(f"✅ Export Success: {result}")
-        else:
-            self.sig_status_message.emit(f"❌ Export Failed: {result}")
+        msg = f"✅ Export Success: {result}" if success else f"❌ Export Failed: {result}"
+        self.sig_status_message.emit(msg)
 
     # =========================================================================
-    # HELPERS & OTHERS
+    # HELPERS
     # =========================================================================
     
     def select_layer(self, layer_id):
@@ -268,17 +311,16 @@ class EditorController(QObject):
         layer = self.state.get_layer(current_id)
         if layer:
             layer.properties.update(new_props)
-            
-            # Jika properti waktu berubah, wajib sync timeline
             if "start_time" in new_props or "duration" in new_props:
                 self._sync_layer_to_timeline(layer)
             
             self.sig_property_changed.emit(current_id, new_props)
-            # Update visual langsung
-            self._on_engine_tick(self.preview_engine.current_time)
+            
+            # Live Update (Frame-based)
+            clean_time = self.frame_to_time(self.current_frame)
+            self.seek_to(clean_time)
             
     def reorder_layers(self, from_idx: int, to_idx: int):
-        # ... (Logika reorder tetap sama, pastikan _sync_layer_to_timeline dipanggil) ...
         if from_idx < 0 or to_idx < 0: return
         if from_idx >= len(self.state.layers) or to_idx >= len(self.state.layers): return
         
@@ -293,13 +335,14 @@ class EditorController(QObject):
             
         self.sig_layers_reordered.emit(updates)
         self.select_layer(layer.id)
-        self._on_engine_tick(self.preview_engine.current_time)
+        
+        clean_time = self.frame_to_time(self.current_frame)
+        self.seek_to(clean_time)
 
-    # ... (Service Proxies: apply_template, caption, chroma, dll TETAP SAMA) ...
+    # ... Service Proxies ...
     def apply_template(self, tpl_id):
         layers = self.tpl_service.generate_layers(tpl_id)
-        for l in layers:
-            self._insert_layer(l)
+        for l in layers: self._insert_layer(l)
 
     def add_audio_layer(self, path):
         self.add_new_layer("audio", path)
@@ -310,22 +353,15 @@ class EditorController(QObject):
             self.sig_status_message.emit("🎙️ Generating Captions...")
             self.cap_service.start_generate_async(current.path, config)
         else:
-            self.sig_status_message.emit("⚠️ Select a video/audio layer first.")
+            self.sig_status_message.emit("⚠️ Select video layer first.")
 
     def _on_caption_success(self, layer_models: list):
         for model in layer_models:
-            # Konversi Model -> LayerData
             layer_data = LayerData(
-                id=model.id,
-                type="text",
-                name="Subtitle",
-                path=None,
-                properties=model.payload
+                id=model.id, type="text", name="Subtitle", path=None, properties=model.payload
             )
-            # Properties waktu perlu diekstrak dari TimeRange
             layer_data.properties["start_time"] = model.time.start
             layer_data.properties["duration"] = model.time.duration
-            
             self._insert_layer(layer_data)
         self.sig_status_message.emit(f"✅ Generated {len(layer_models)} captions")
 
@@ -334,15 +370,10 @@ class EditorController(QObject):
 
     def apply_chroma_config(self, color_hex: str, threshold: float):
         self.update_layer_property({
-            "chroma_active": True,
-            "chroma_color": color_hex,
-            "chroma_threshold": threshold
+            "chroma_active": True, "chroma_color": color_hex, "chroma_threshold": threshold
         })
 
     def remove_chroma_config(self):
         self.update_layer_property({"chroma_active": False})
-    
-    # [NEW] Export Project method for Binder mapping
-    def export_project(self):
-        # Trigger default render config (bisa dikembangkan)
-        pass
+        
+    def export_project(self): pass
