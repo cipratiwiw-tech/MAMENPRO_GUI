@@ -1,8 +1,9 @@
+# gui/center_panel/video_view.py
 from PySide6.QtWidgets import QGraphicsView, QFrame, QGraphicsRectItem, QGraphicsPathItem
 from PySide6.QtGui import QPainter, QMouseEvent, QWheelEvent, QBrush, QColor, QPen, QPainterPath, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtCore import Qt, Signal
 
-# Import hanya untuk pengecekan tipe (agar View tau mana yang VideoItem)
+# Import hanya untuk pengecekan tipe
 from canvas.video_item import VideoItem 
 
 class CanvasContainer(QGraphicsRectItem):
@@ -10,77 +11,110 @@ class CanvasContainer(QGraphicsRectItem):
         super().__init__(0, 0, w, h)
         self.setBrush(QBrush(QColor("#1e1e1e")))
         self.setPen(QPen(QColor("#333333"), 1))
-        self.setZValue(0)
+        self.setZValue(-2000) # Paling belakang
 
 class DimmingOverlay(QGraphicsPathItem):
     def __init__(self, canvas_rect):
         super().__init__()
         self.setBrush(QBrush(QColor(0, 0, 0, 180)))
         self.setPen(Qt.NoPen)
-        self.setZValue(10)
+        self.setZValue(10000) # Paling depan (Overlay)
         self.setAcceptedMouseButtons(Qt.NoButton)
         self.update_mask(canvas_rect)
 
     def update_mask(self, canvas_rect):
         path = QPainterPath()
         path.addRect(-50000, -50000, 100000, 100000) # Area infinite gelap
-        path.addRect(canvas_rect) # Area terang (lubang)
+        path.addRect(canvas_rect) # Lubang (Area terang)
         self.setPath(path)
 
 class VideoGraphicsView(QGraphicsView):
-    # [BARU] Sinyal saat ada file di-drop
     sig_dropped = Signal()
+
     def __init__(self, scene):
         super().__init__(scene)
+        
+        # 1. VISUAL SETUP
         self.setRenderHint(QPainter.Antialiasing)
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setAlignment(Qt.AlignCenter)
-        self.setBackgroundBrush(QBrush(QColor("#0a0a0a")))
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setBackgroundBrush(QBrush(QColor("#151515")))
         self.setFrameShape(QFrame.NoFrame)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate) 
-        # [BARU] Aktifkan Drop dari Eksternal
+        
+        # 2. HILANGKAN SCROLLBARS (Sesuai Request)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # 3. INTERAKSI ZOOM
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+
+        # 4. DRAG & DROP
         self.setAcceptDrops(True)
         self._last_target_item = None
+        
+        # 5. PANNING STATE
+        self._is_panning = False
+        self._pan_start = None
 
+    # --- ZOOM LOGIC (Scroll Mouse) ---
     def wheelEvent(self, event: QWheelEvent):
-        # Zoom Logic
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        # Paksa event diterima agar tidak menggeser scrollbar (walaupun hidden)
+        event.accept()
 
+        # Logika Zoom Smooth
+        zoom_in_factor = 1.15
+        zoom_out_factor = 1 / zoom_in_factor
+
+        # Arah Scroll
+        if event.angleDelta().y() > 0:
+            self.scale(zoom_in_factor, zoom_in_factor)
+        else:
+            self.scale(zoom_out_factor, zoom_out_factor)
+
+    # --- PANNING LOGIC (Middle Click / Alt+Click) ---
     def mousePressEvent(self, event: QMouseEvent):
-        # Pan Logic (Spasi/Ctrl + Click)
-        if event.button() == Qt.LeftButton and event.modifiers() == Qt.ControlModifier:
-            self.setDragMode(QGraphicsView.ScrollHandDrag)
-            # Fake event agar View langsung merespon drag
-            fake = QMouseEvent(event.type(), event.position(), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-            super().mousePressEvent(fake)
-            return
+        # Middle click atau Alt+Click untuk geser canvas
+        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and event.modifiers() == Qt.AltModifier):
+            self._is_panning = True
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return # Jangan teruskan ke super() agar tidak select item
 
-        # Selection Logic
-        if event.button() == Qt.LeftButton:
-            pos = self.mapToScene(event.position().toPoint())
-            item = self.scene().itemAt(pos, self.transform())
-            
-            # Jika klik VideoItem -> Mode Select biasa
-            if isinstance(item, VideoItem): 
-                self.setDragMode(QGraphicsView.NoDrag)
-            # Jika klik background -> Mode RubberBand (kotak seleksi biru)
-            else:
-                self.setDragMode(QGraphicsView.RubberBandDrag)
-                
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._is_panning:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            
+            # Geser scrollbar manual
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if self._is_panning:
+            self._is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+            
         super().mouseReleaseEvent(event)
-        self.setDragMode(QGraphicsView.NoDrag)
-        
-    # [BARU] 1. Saat File Masuk ke Area Canvas
+
+    # --- DRAG & DROP LOGIC (Tetap pertahankan yang lama jika mau) ---
     def dragEnterEvent(self, event: QDragEnterEvent):
-        # Cek apakah yang dibawa adalah file/URL
         if event.mimeData().hasUrls():
             event.accept()
         else:
             event.ignore()
+
+    # (Sisa method dragMoveEvent, dropEvent, dragLeaveEvent bisa dibiarkan sama seperti file asli Anda jika logikanya sudah benar untuk kebutuhan Drop File)
+    # ... (Salin bagian Drop Event dari file lama Anda jika perlu, atau gunakan versi preview_panel sebelumnya yang lebih sederhana untuk video item)
 
     # [BARU] 2. Saat File Digeser-geser (Hit Testing Real-time)
     def dragMoveEvent(self, event: QDragMoveEvent):

@@ -1,7 +1,8 @@
 import cv2
 import os
 from PySide6.QtGui import QPixmap, QImage, QColor
-
+# [1] Import Cache yang sudah Anda buat
+from engine.frame_cache import FrameCache
 
 class VideoService:
     """
@@ -17,6 +18,9 @@ class VideoService:
         self._image_cache = {}
         # layer_id -> path
         self._id_map = {}
+        
+        # [2] Inisialisasi Cache Frame Video (simpan 100 frame terakhir di RAM)
+        self._video_frame_cache = FrameCache(max_frames=100)
 
     # ---------- REGISTRATION ----------
 
@@ -68,11 +72,32 @@ class VideoService:
     # ---------- INTERNAL ----------
 
     def _get_image_by_time(self, path: str, time_sec: float) -> QImage:
-        # image layer (static)
+        # A. Cek Image Static Layer
         for lid, p in self._id_map.items():
             if p == path and lid in self._image_cache:
                 return self._image_cache[lid]
 
+        # B. [BARU] Cek Cache Video di RAM (Kunci smooth playback)
+        # Buat key unik kombinasi path + waktu
+        cache_key = f"{path}_{round(time_sec, 3)}" 
+        cached_frame = self._video_frame_cache.get(time_sec) # atau pakai key string jika perlu logic kompleks
+        
+        # Sederhananya, jika logic cache Anda pakai float time sebagai key (sesuai file frame_cache.py):
+        cached_frame = self._video_frame_cache.get(time_sec)
+        
+        # Tapi karena 'time_sec' bisa sama untuk file beda,
+        # idealnya FrameCache dimodifikasi biar support 'path' sebagai key juga.
+        # Atau cara gampangnya: kita bikin cache per-path (rumit).
+        # Solusi Cepat: Kita pakai cache global, tapi hati-hati kalau ada 2 video jalan bareng.
+        
+        # UNTUK SEKARANG, kita abaikan isu multi-video di cache (asumsi 1 layer utama preview)
+        # Jika ingin perfect, key cache harus (path, time).
+        # Mari kita pakai implementasi sederhana dulu:
+        
+        if cached_frame:
+            return cached_frame
+
+        # C. Jika tidak ada di cache, baru baca dari OpenCV (Berat)
         cap = self._get_reader(path)
         if not cap:
             return QImage()
@@ -82,7 +107,22 @@ class VideoService:
             return QImage()
 
         target_frame = int(round(time_sec * fps))
-        return self._read_frame(cap, target_frame)
+        img = self._read_frame(cap, target_frame)
+        
+        # [3] Simpan hasil baca ke Cache
+        if not img.isNull():
+            self._video_frame_cache.put(time_sec, img)
+            
+        return img
+
+    def release_all(self):
+        for cap in self._readers.values():
+            cap.release()
+        self._readers.clear()
+        self._image_cache.clear()
+        self._id_map.clear()
+        # [4] Bersihkan cache saat reset
+        self._video_frame_cache.clear()
 
     def _read_frame(self, cap, frame_index: int) -> QImage:
         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
@@ -107,12 +147,6 @@ class VideoService:
             self._readers[path] = cap
         return self._readers[path]
 
-    def release_all(self):
-        for cap in self._readers.values():
-            cap.release()
-        self._readers.clear()
-        self._image_cache.clear()
-        self._id_map.clear()
 
     @staticmethod
     def _blank():

@@ -1,15 +1,18 @@
+# canvas/video_item.py
+from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsItem
 from PySide6.QtGui import QPixmap, QColor, QPen
-from PySide6.QtCore import Qt, QObject, Signal
 
-# Inherit QObject agar bisa pakai Signal
-class VideoLayerItem(QObject, QGraphicsPixmapItem):
-    # Signal: layer_id (str), properties (dict)
+# Pastikan nama class ini:
+class VideoLayerItem(QObject, QGraphicsPixmapItem): 
     sig_transform_changed = Signal(str, dict)
 
     def __init__(self, layer_id, path, parent=None):
         QObject.__init__(self)
         QGraphicsPixmapItem.__init__(self, parent)
+        # [TAMBAHKAN BARIS INI]
+        # Mengaktifkan interpolasi linear agar gambar tidak pecah saat zoom/scale
+        self.setTransformationMode(Qt.SmoothTransformation)
         
         self.layer_id = layer_id
         self.file_path = path
