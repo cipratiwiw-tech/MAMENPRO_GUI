@@ -94,30 +94,60 @@ class EditorController(QObject):
 
     # --- CRUD LAYERS ---
     def add_new_layer(self, layer_type, path=None):
+        """
+        Menambahkan layer baru ke Track 0 (Paling Atas) dan menggeser layer lain ke bawah.
+        """
+        # 1. GESER LAYER LAMA (Push Down)
+        # Agar tidak tabrakan di Track 0
+        for existing in self.state.layers:
+            curr_track = existing.properties.get('track_index', 0)
+            new_track = curr_track + 1
+            existing.properties['track_index'] = new_track
+            existing.z_index = 100 - new_track # Recalculate Z (Track 1 = Z 99)
+            
+            # Sync Timeline Engine
+            self._sync_layer_to_timeline(existing)
+            
+            # Update Visual Preview (PENTING: Agar Z-Order layer lama turun)
+            self.sig_property_changed.emit(existing.id, {
+                "track_index": new_track,
+                "z_index": existing.z_index
+            })
+
+        # 2. BUAT LAYER BARU (Di Track 0)
         new_id = str(uuid.uuid4())[:8]
         name = f"{layer_type.upper()} {len(self.state.layers) + 1}"
         layer_data = LayerData(id=new_id, type=layer_type, name=name, path=path)
+        
+        # Default Track 0 (Top Front)
+        layer_data.properties['track_index'] = 0
+        layer_data.z_index = 100 
+
         if layer_type == 'text':
             layer_data.properties['text_content'] = "New Text"
+            
+        # 3. INSERT & REFRESH
         self._insert_layer(layer_data)
 
     def _insert_layer(self, layer_data: LayerData):
         if layer_data.type in ['video', 'image', 'audio'] and layer_data.path:
             if os.path.exists(layer_data.path):
                 self.video_service.register_source(layer_data.id, layer_data.path)
-                if layer_data.type == "video":
-                    # Simple FPS detection hook
-                    pass
             else:
                 self.sig_status_message.emit(f"⚠️ File not found: {layer_data.path}")
 
         self.state.add_layer(layer_data)
         self._sync_layer_to_timeline(layer_data)
+        
+        # Emit Created (Timeline Panel akan refresh total dari state)
         self.sig_layer_created.emit(layer_data)
+        
         self.select_layer(layer_data.id)
         
+        # [INSTANT PREVIEW] Seek ke awal clip agar frame langsung muncul
         start_t = float(layer_data.properties.get("start_time", 0.0))
         self.seek_to(start_t)
+        
         self.sig_status_message.emit(f"✅ Layer Added: {layer_data.name}")
 
     def _sync_layer_to_timeline(self, layer_data: LayerData):
@@ -141,12 +171,28 @@ class EditorController(QObject):
         total_dur = self.timeline.get_total_duration()
         self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
 
-    def move_layer_time(self, layer_id: str, new_start_time: float):
+    def move_layer_time(self, layer_id: str, new_start_time: float, new_track_index: int = -1):
         if new_start_time < 0: new_start_time = 0.0
         frame_start = self.time_to_frame(new_start_time)
         clean_start_time = self.frame_to_time(frame_start)
+        
         self.state.selected_layer_id = layer_id
-        self.update_layer_property(layer_id, {"start_time": clean_start_time})
+        
+        updates = {"start_time": clean_start_time}
+        
+        # [Z-ORDER UPDATE VIA DRAG]
+        if new_track_index >= 0:
+            updates["track_index"] = new_track_index
+            # Recalculate Z-Index
+            new_z_index = 100 - new_track_index
+            updates["z_index"] = new_z_index
+            
+            # Update state object langsung untuk properti non-dict
+            layer = self.state.get_layer(layer_id)
+            if layer:
+                layer.z_index = new_z_index
+
+        self.update_layer_property(layer_id, updates)
         self.seek_to(clean_start_time)
 
     def delete_current_layer(self):
@@ -167,61 +213,43 @@ class EditorController(QObject):
         layer = self.state.get_layer(layer_id)
         self.sig_selection_changed.emit(layer)
 
-    # ✅ FIXED: ROBUST PROPERTY UPDATE
     def update_layer_property(self, arg1, arg2=None, arg3=None):
-        """
-        Menangani berbagai format sinyal:
-        1. (layer_id, dict) -> Dari Preview Panel
-        2. (dict) -> Dari Panel Lama (Asumsi layer yang dipilih)
-        3. (layer_id, key, value) -> Format Key-Value
-        """
         layer_id = None
         new_props = {}
 
-        # Deteksi Argumen
         if isinstance(arg1, dict):
-            # Format: update_layer_property(props_dict)
             layer_id = self.state.selected_layer_id
             new_props = arg1
         elif isinstance(arg1, str) and isinstance(arg2, dict):
-            # Format: update_layer_property(layer_id, props_dict)
             layer_id = arg1
             new_props = arg2
         elif isinstance(arg1, str) and isinstance(arg2, str):
-            # Format: update_layer_property(layer_id, key, value)
             layer_id = arg1
             new_props = {arg2: arg3}
         else:
-            # Fallback atau invalid
             return
 
         if not layer_id: return
         layer = self.state.get_layer(layer_id)
         if layer:
             layer.properties.update(new_props)
-            if "start_time" in new_props or "duration" in new_props:
+            
+            # Sync timeline engine jika waktu/track berubah
+            if any(k in new_props for k in ["start_time", "duration", "track_index"]):
                 self._sync_layer_to_timeline(layer)
             
             self.sig_property_changed.emit(layer_id, new_props)
             
-            # Refresh Frame
             clean_time = self.frame_to_time(self.current_frame)
             self.seek_to(clean_time)
 
     def reorder_layers(self, from_idx: int, to_idx: int):
+        # Legacy support
         if from_idx < 0 or to_idx < 0: return
         if from_idx >= len(self.state.layers) or to_idx >= len(self.state.layers): return
         layer = self.state.layers.pop(from_idx)
         self.state.layers.insert(to_idx, layer)
-        updates = []
-        for i, l in enumerate(self.state.layers):
-            l.z_index = i
-            self._sync_layer_to_timeline(l) 
-            updates.append({"id": l.id, "z_index": i})
-        self.sig_layers_reordered.emit(updates)
         self.select_layer(layer.id)
-        clean_time = self.frame_to_time(self.current_frame)
-        self.seek_to(clean_time)
 
     # --- RENDER ---
     def process_render(self, config):
@@ -232,14 +260,12 @@ class EditorController(QObject):
         self.sig_status_message.emit("⏳ Preparing Render...")
         self.preview_engine.pause()
         
-        # Panggil Service dengan nama yang BENAR
         success, worker_or_msg = self.render_service.start_render_process(self.timeline, config, self.video_service)
         
         if success:
             worker = worker_or_msg
             worker.sig_progress.connect(self._on_render_progress)
             worker.sig_finished.connect(self._on_render_finished)
-            # Worker jalan otomatis karena sudah di-start di service
         else:
             self.sig_status_message.emit(f"❌ {worker_or_msg}")
 
@@ -263,7 +289,12 @@ class EditorController(QObject):
         self.video_service.release_all()
         self.sig_layer_cleared.emit()
         self.current_frame = 0
-        for l in layers: self._insert_layer(l)
+        for l in layers: 
+            if 'track_index' not in l.properties:
+                l.properties['track_index'] = 0
+            l.z_index = 100 - l.properties['track_index']
+            self._insert_layer(l)
+            
         self.seek_to(0.0)
         self.sig_status_message.emit("✅ Project Loaded")
 
@@ -276,10 +307,21 @@ class EditorController(QObject):
 
     def apply_template(self, tpl_id):
         layers = self.tpl_service.generate_layers(tpl_id)
-        for l in layers: self._insert_layer(l)
+        for i, l in enumerate(layers):
+            l.properties['track_index'] = i
+            l.z_index = 100 - i
+            self._insert_layer(l)
 
     def add_audio_layer(self, path):
-        self.add_new_layer("audio", path)
+        new_id = str(uuid.uuid4())[:8]
+        name = f"AUDIO {len(self.state.layers) + 1}"
+        layer = LayerData(id=new_id, type="audio", name=name, path=path)
+        
+        # Audio default di Track 5 ke bawah
+        layer.properties['track_index'] = 5 
+        layer.z_index = 95
+        
+        self._insert_layer(layer)
 
     def generate_auto_captions(self, config):
         current = self.state.get_layer(self.state.selected_layer_id)
@@ -296,6 +338,9 @@ class EditorController(QObject):
             )
             layer_data.properties["start_time"] = model.time.start
             layer_data.properties["duration"] = model.time.duration
+            layer_data.properties["track_index"] = 0
+            layer_data.z_index = 100
+            
             self._insert_layer(layer_data)
         self.sig_status_message.emit(f"✅ Generated {len(layer_models)} captions")
 

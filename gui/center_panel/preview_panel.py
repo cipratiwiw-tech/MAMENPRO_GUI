@@ -25,14 +25,12 @@ class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         
-        # UI Bersih
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         
-        # Logic Center Lock
         self.setAlignment(Qt.AlignCenter)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -108,7 +106,6 @@ class PreviewPanel(QWidget):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 0, 10, 0)
         
-        # KIRI
         self.combo_ratio = QComboBox()
         self.combo_ratio.addItems(self.CANVAS_PRESETS.keys())
         self.combo_ratio.setCurrentIndex(0)
@@ -123,7 +120,6 @@ class PreviewPanel(QWidget):
 
         layout.addStretch()
         
-        # TENGAH
         self.lbl_time = QLabel("00:00:00")
         self.lbl_time.setAlignment(Qt.AlignCenter)
         self.lbl_time.setFixedWidth(100) 
@@ -143,7 +139,6 @@ class PreviewPanel(QWidget):
         
         layout.addStretch()
         
-        # KANAN
         btn_fit = QToolButton(text="🔍 Fit View")
         btn_fit.setStyleSheet("""
             QToolButton { color: white; border: 1px solid #555; border-radius: 3px; padding: 4px 8px; }
@@ -154,8 +149,6 @@ class PreviewPanel(QWidget):
         
         self.layout.addWidget(bar)
 
-    # --- 🔥 CONTEXT MENU 🔥 ---
-    
     def contextMenuEvent(self, event):
         scene_pos = self.view.mapToScene(event.pos())
         items = self.scene.items(scene_pos)
@@ -211,65 +204,30 @@ class PreviewPanel(QWidget):
         else:
             super().keyPressEvent(event)
 
-    # --- 🔥 LOGIKA AKSI YANG DIPERBAIKI (PRESISI) 🔥 ---
-
     def _action_reset(self, item):
-        """
-        Reset Transform:
-        - Scale -> 100%
-        - Rotation -> 0
-        - Posisi X/Y -> TIDAK BERUBAH (Diam)
-        """
         props = {"scale": 100, "rotation": 0}
         self.sig_property_changed.emit(item.layer_id, props)
 
     def _action_center(self, item):
-        """
-        Center to Canvas:
-        - Scale -> TIDAK BERUBAH
-        - Rotation -> TIDAK BERUBAH
-        - Posisi X/Y -> Pindah ke Center Canvas
-        """
-        # Dimensi Canvas
         frame_rect = self.canvas_frame.rect()
         canvas_cx = frame_rect.width() / 2
         canvas_cy = frame_rect.height() / 2
-        
-        # Dimensi Item (Original/Unscaled)
-        # Karena transformOrigin kita set di center (w/2, h/2),
-        # maka Posisi Item agar visualnya center adalah:
-        # Pos = PusatCanvas - (SetengahUkuranAsli)
         item_rect = item.boundingRect()
-        
         final_x = canvas_cx - (item_rect.width() / 2)
         final_y = canvas_cy - (item_rect.height() / 2)
-        
         props = {"x": final_x, "y": final_y}
         self.sig_property_changed.emit(item.layer_id, props)
 
     def _action_fit(self, item):
-        """
-        Fit to Canvas:
-        - Scale -> Dihitung agar 'Contain' (muat) di canvas
-        - Rotation -> 0 (Reset)
-        - Posisi X/Y -> Pindah ke Center Canvas
-        """
         frame_rect = self.canvas_frame.rect()
         item_rect = item.boundingRect()
-        
         if item_rect.width() > 0 and item_rect.height() > 0:
-            # Hitung Ratio
             ratio_w = frame_rect.width() / item_rect.width()
             ratio_h = frame_rect.height() / item_rect.height()
-            
-            # Gunakan min() untuk 'Fit/Contain' (agar seluruh gambar masuk)
-            # Gunakan max() jika ingin 'Cover' (agar tidak ada ruang kosong)
             final_ratio = min(ratio_w, ratio_h)
             
-            # Posisi Center (Sama rumusnya dengan _action_center karena Pivot di tengah)
             canvas_cx = frame_rect.width() / 2
             canvas_cy = frame_rect.height() / 2
-            
             final_x = canvas_cx - (item_rect.width() / 2)
             final_y = canvas_cy - (item_rect.height() / 2)
             
@@ -280,8 +238,6 @@ class PreviewPanel(QWidget):
                 "y": final_y
             }
             self.sig_property_changed.emit(item.layer_id, props)
-
-    # --- STANDARD METHODS ---
 
     def _center_canvas_item(self):
         cx = -self.canvas_width / 2
@@ -346,6 +302,11 @@ class PreviewPanel(QWidget):
             item = self.items_map[layer_id]
             item.blockSignals(True)
             item.update_transform(props)
+            
+            # [BARU] Update Z-Index jika ada (untuk sinkronisasi Z-Order)
+            if "z_index" in props:
+                item.setZValue(props["z_index"])
+                
             item.blockSignals(False)
             if "start_time" in props:
                 item.start_time = float(props["start_time"])
