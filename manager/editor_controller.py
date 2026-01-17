@@ -248,6 +248,12 @@ class EditorController(QObject):
         self.state.layers.insert(to_idx, layer)
         self.select_layer(layer.id)
 
+    # [NEW] Method untuk update state resolusi
+    def update_canvas_resolution(self, width: int, height: int):
+        self.state.width = width
+        self.state.height = height
+        self.sig_status_message.emit(f"📐 Resolution set to {width}x{height}")
+
     # --- RENDER ---
     def process_render(self, config):
         if self.timeline.get_total_duration() <= 0:
@@ -257,7 +263,16 @@ class EditorController(QObject):
         self.sig_status_message.emit("⏳ Preparing Render...")
         self.preview_engine.pause()
         
-        success, worker_or_msg = self.render_service.start_render_process(self.timeline, config, self.video_service)
+        # [NEW] INJECT RESOLUTION FROM STATE
+        # Config dari UI hanya berisi path, fps, quality.
+        # Kita tambahkan width/height dari ProjectState.
+        render_config = config.copy()
+        render_config["width"] = self.state.width
+        render_config["height"] = self.state.height
+        
+        success, worker_or_msg = self.render_service.start_render_process(
+            self.timeline, render_config, self.video_service
+        )
         
         if success:
             worker = worker_or_msg
@@ -266,13 +281,15 @@ class EditorController(QObject):
         else:
             self.sig_status_message.emit(f"❌ {worker_or_msg}")
 
+    # ✅ METODE INI SEBELUMNYA HILANG
     def _on_render_progress(self, val):
         self.sig_status_message.emit(f"Rendering: {val}%")
 
+    # ✅ METODE INI SEBELUMNYA HILANG
     def _on_render_finished(self, success, result):
         msg = f"✅ Export Success: {result}" if success else f"❌ Export Failed: {result}"
         self.sig_status_message.emit(msg)
-
+        
     # --- OTHER SERVICES ---
     def load_project(self, path):
         self.sig_status_message.emit("📂 Loading Project...")

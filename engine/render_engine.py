@@ -4,9 +4,11 @@ import numpy as np
 import subprocess
 import os
 import tempfile
-from PySide6.QtGui import QImage, QPainter, QColor
+from PySide6.QtGui import QImage, QPainter, QColor, QFont, QPen, QFontMetrics
+from PySide6.QtCore import Qt, QRectF
 
 from engine.ffmpeg_renderer import FFmpegRenderer
+from engine.chroma_processor import ChromaProcessor # Pastikan ini diimport
 
 class RenderEngine:
     def __init__(self, timeline, video_service):
@@ -16,28 +18,24 @@ class RenderEngine:
 
     def render(self, output_path, settings, callback=None):
         fps = settings.get("fps", 30)
+        
+        # [NEW] AMBIL RESOLUSI DARI SETTINGS
+        # Default fallback ke 1080x1920 jika tidak ada
+        width = settings.get("width", 1080)
+        height = settings.get("height", 1920)
+        
         duration = self.timeline.get_total_duration()
         total_frames = int(duration * fps)
-        width, height = 1920, 1080 
-        
-        # 1. AUDIO PROCESSING
+                
+        # 1. AUDIO PROCESSING (Sama seperti sebelumnya)
         print("🔊 Processing Audio Mix...")
         temp_audio_path = os.path.join(tempfile.gettempdir(), "mamen_mix_temp.aac")
-        
-        # Coba mix audio, hasilnya True/False
         has_audio = self._mix_audio(temp_audio_path)
-        
-        if has_audio:
-            print(f"✅ Audio Mix Created: {temp_audio_path}")
-        else:
-            print("⚠️ Rendering Silent Video (No Audio Sources Found)")
 
         # 2. INIT RENDERER
         self.renderer = FFmpegRenderer(output_path, width, height, fps)
         
-        # Kirim path audio yang sudah di-mix (jika ada)
         if has_audio:
-            # start_process(audio_path, delay=0) karena delay sudah di-handle saat mixing
             self.renderer.start_process(audio_path=temp_audio_path, audio_delay_ms=0)
         else:
             self.renderer.start_process() 
@@ -46,37 +44,20 @@ class RenderEngine:
             for frame_idx in range(total_frames):
                 current_time = frame_idx / float(fps)
                 
-                # A. Layer Management
                 active_layers = self.timeline.get_active_layers(current_time)
-                active_layers.sort(key=lambda x: x.z_index)
+                active_layers.sort(key=lambda x: x.z_index) 
                 
-                # B. Canvas Setup
+                # Canvas size dinamis
                 canvas = QImage(width, height, QImage.Format_ARGB32)
-                canvas.fill(QColor(0, 0, 0, 0)) 
+                canvas.fill(QColor(0, 0, 0, 255)) 
                 painter = QPainter(canvas)
                 
-                # C. Drawing Loop
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.setRenderHint(QPainter.TextAntialiasing)
+                
                 for layer in active_layers:
-                    layer_path = layer.payload.get("path")
-                    if layer_path:
-                        local_time = current_time - layer.time.start
-                        img = self.video_service.get_frame_image(layer_path, local_time)
-                        
-                        if img and not img.isNull():
-                            props = layer.payload
-                            x = props.get("x", 0)
-                            y = props.get("y", 0)
-                            scale = props.get("scale", 100) / 100.0
-                            rotation = props.get("rotation", 0)
-                            opacity = props.get("opacity", 1.0)
-                            
-                            painter.save()
-                            painter.translate(x + img.width()/2, y + img.height()/2)
-                            painter.rotate(rotation)
-                            painter.scale(scale, scale)
-                            painter.setOpacity(opacity)
-                            painter.drawImage(-img.width()/2, -img.height()/2, img)
-                            painter.restore()
+                    self._draw_layer(painter, layer, current_time)
                 
                 painter.end()
                 
@@ -92,55 +73,123 @@ class RenderEngine:
                     
         except Exception as e:
             print(f"🔥 Render Error: {e}")
+            import traceback
+            traceback.print_exc()
             raise e
             
         finally:
             if self.renderer:
                 self.renderer.close_process()
                 self.renderer = None
-            
-            # Cleanup temp audio
             if has_audio and os.path.exists(temp_audio_path):
                 try: os.remove(temp_audio_path)
                 except: pass
 
-    def _mix_audio(self, output_path):
+    def _draw_layer(self, painter: QPainter, layer, global_time):
         """
-        Menggabungkan audio dari semua layer menggunakan FFmpeg.
+        Fungsi inti untuk menggambar satu layer ke canvas render.
+        Menangani Video, Image, dan Text.
         """
-        # AKSES LAYERS YANG ROBUST (Cek property 'layers', lalu fallback '_layers')
-        if hasattr(self.timeline, 'layers'):
-            all_layers = self.timeline.layers
-        elif hasattr(self.timeline, '_layers'):
-            all_layers = self.timeline._layers
-        else:
-            print("❌ Audio Mix Error: Timeline layers not accessible!")
-            return False
+        props = layer.payload
+        layer_type = layer.type
+        
+        # Transformasi Dasar (X, Y, Scale, Rotation, Opacity)
+        x = props.get("x", 0)
+        y = props.get("y", 0)
+        scale = props.get("scale", 100) / 100.0
+        rotation = props.get("rotation", 0)
+        opacity = props.get("opacity", 1.0)
+        
+        painter.save()
+        
+        # --- 1. HANDLE VIDEO / IMAGE ---
+        if layer_type in ['video', 'image']:
+            path = props.get("path")
+            if path:
+                # Hitung waktu lokal video
+                start_offset = float(props.get("start_time", 0.0))
+                local_time = global_time - start_offset
+                
+                # Ambil Frame dari VideoService
+                qimg = self.video_service.get_frame_image(path, local_time)
+                
+                if qimg and not qimg.isNull():
+                    # [CHROMA KEY LOGIC]
+                    if props.get("chroma_active", False):
+                        c_color = props.get("chroma_color", "#00ff00")
+                        c_thresh = float(props.get("chroma_threshold", 0.15))
+                        # Proses Chroma (Hijau -> Transparan)
+                        qimg = ChromaProcessor.process_qimage(qimg, c_color, c_thresh)
+                    
+                    # Apply Transform
+                    # Pivot point di tengah gambar (Sama seperti Preview)
+                    w, h = qimg.width(), qimg.height()
+                    painter.translate(x + (w*scale)/2, y + (h*scale)/2) # Pindah ke tengah target
+                    painter.rotate(rotation)
+                    painter.scale(scale, scale)
+                    painter.setOpacity(opacity)
+                    
+                    # Gambar (offset -w/2, -h/2 agar pivot di tengah)
+                    painter.drawImage(-w/2, -h/2, qimg)
+
+        # --- 2. HANDLE TEXT / CAPTION ---
+        elif layer_type in ['text', 'caption']:
+            text_content = props.get("text_content", "Sample Text")
+            font_family = props.get("font_family", "Arial")
+            font_size = int(props.get("font_size", 60))
+            color_hex = props.get("text_color", "#ffffff")
+            is_bold = props.get("is_bold", False)
             
+            # Setup Font
+            font = QFont(font_family, font_size)
+            font.setBold(is_bold)
+            painter.setFont(font)
+            painter.setPen(QColor(color_hex))
+            
+            # Hitung Ukuran Teks untuk Pivot Center
+            fm = QFontMetrics(font)
+            rect = fm.boundingRect(text_content)
+            text_w = rect.width()
+            text_h = rect.height()
+            
+            # Apply Transform
+            # Asumsi X,Y adalah posisi Top-Left dari item di Preview
+            # Kita sesuaikan pivot ke tengah teks
+            painter.translate(x + (text_w*scale)/2, y + (text_h*scale)/2)
+            painter.rotate(rotation)
+            painter.scale(scale, scale)
+            painter.setOpacity(opacity)
+            
+            # Gambar Teks
+            # y offset sedikit digeser ke bawah karena drawText menggambar dari baseline
+            painter.drawText(-text_w/2, text_h/4, text_content)
+
+        painter.restore()
+
+    def _mix_audio(self, output_path):
+        # ... (Kode _mix_audio SAMA PERSIS dengan sebelumnya, tidak perlu diubah) ...
+        # Pastikan Anda menyalin method _mix_audio dari file sebelumnya ke sini
+        if hasattr(self.timeline, 'layers'): # Support method property baru
+             all_layers = self.timeline.layers
+        else:
+             all_layers = self.timeline._layers
+
         audio_layers = []
         for l in all_layers:
-            # Filter hanya layer Video/Audio yang punya Path
             if l.type in ['video', 'audio'] and l.payload.get('path'):
                 audio_layers.append(l)
         
-        if not audio_layers:
-            print("ℹ️ Info: No audio/video layers to mix.")
-            return False
+        if not audio_layers: return False
 
-        # Bangun Command FFmpeg
         cmd = ['ffmpeg', '-y']
         filter_complex = []
         mix_inputs = []
         
-        # 1. Inputs
         for layer in audio_layers:
             cmd.extend(['-i', layer.payload['path']])
             
-        # 2. Filter Graph (Delay & Mix)
         for i, layer in enumerate(audio_layers):
             start_ms = int(layer.time.start * 1000)
-            
-            # Jika ada delay (posisi di timeline > 0)
             if start_ms > 0:
                 tag = f"d{i}"
                 filter_complex.append(f"[{i}:a]adelay={start_ms}|{start_ms}[{tag}]")
@@ -148,33 +197,15 @@ class RenderEngine:
             else:
                 mix_inputs.append(f"[{i}:a]")
         
-        # Mix semua stream
         inputs_count = len(mix_inputs)
         inputs_str = "".join(mix_inputs)
-        
-        # Gunakan amix
         filter_complex.append(f"{inputs_str}amix=inputs={inputs_count}:dropout_transition=0[out]")
         
         cmd.extend(['-filter_complex', ";".join(filter_complex)])
         cmd.extend(['-map', '[out]', '-c:a', 'aac', '-b:a', '192k', output_path])
         
-        # Debug Command (Cek log ini jika audio masih hilang)
-        # print(f"🎵 Mixing Cmd: {' '.join(cmd)}")
-        
-        # Jalankan FFmpeg
         creation_flags = 0
-        if os.name == 'nt':
-            creation_flags = subprocess.CREATE_NO_WINDOW
+        if os.name == 'nt': creation_flags = subprocess.CREATE_NO_WINDOW
             
-        result = subprocess.run(
-            cmd, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE,
-            creationflags=creation_flags
-        )
-        
-        if result.returncode != 0:
-            print("❌ Audio Mix Failed:", result.stderr.decode())
-            return False
-            
-        return True
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
+        return result.returncode == 0

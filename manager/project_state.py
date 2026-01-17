@@ -9,13 +9,9 @@ class LayerData:
     name: str
     path: Optional[str] = None
     
-    # Properti Default yang Aman
     properties: Dict = field(default_factory=lambda: {
-        # Transform Common
         "x": 0, "y": 0, "scale": 100, "opacity": 1.0, "rotation": 0,
         "start_time": 0.0, "duration": 5.0,
-        
-        # Text Specific Defaults
         "text_content": "Double Click to Edit",
         "font_family": "Arial",
         "font_size": 60,
@@ -30,10 +26,14 @@ class ProjectState:
     def __init__(self):
         self.layers: List[LayerData] = []
         self.selected_layer_id: Optional[str] = None
+        
+        # [NEW] GLOBAL CANVAS RESOLUTION
+        # Default 1080x1920 (9:16) agar sesuai default Preview
+        self.width: int = 1080
+        self.height: int = 1920
 
     def add_layer(self, layer: LayerData):
         self.layers.append(layer)
-        # Urutkan berdasarkan z_index (terkecil di bawah)
         self.layers.sort(key=lambda x: x.z_index)
 
     def get_layer(self, layer_id: str) -> Optional[LayerData]:

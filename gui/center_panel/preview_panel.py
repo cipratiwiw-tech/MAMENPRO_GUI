@@ -55,6 +55,9 @@ class PreviewPanel(QWidget):
     sig_property_changed = Signal(str, dict) 
     sig_layer_selected = Signal(str)
     sig_request_delete = Signal(str) 
+    
+    # [NEW] Signal untuk update resolusi global
+    sig_resolution_changed = Signal(int, int)
 
     CANVAS_PRESETS = {
         "9:16 (Tiktok/Reels)": (1080, 1920),
@@ -248,9 +251,14 @@ class PreviewPanel(QWidget):
         w, h = self.CANVAS_PRESETS.get(ratio_text, (1080, 1920))
         self.canvas_width = w
         self.canvas_height = h
+        
+        # Update Visual Frame
         self.canvas_frame.update_size(w, h)
         self._center_canvas_item()
         self._fit_view()
+        
+        # [NEW] Emit signal ke Controller
+        self.sig_resolution_changed.emit(w, h)
 
     def _fit_view(self):
         self.view.resetTransform()

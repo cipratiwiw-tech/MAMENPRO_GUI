@@ -60,6 +60,10 @@ class EditorBinder(QObject):
             # 🔥 TAMBAHKAN INI: Agar tombol Delete & Menu Context berfungsi
             if hasattr(pp, 'sig_request_delete'):
                 pp.sig_request_delete.connect(lambda lid: self.c.delete_current_layer())
+            
+            # 🔥 [NEW] WIRING RESOLUSI AGAR RENDER IKUT PORTRAIT/LANDSCAPE
+            if hasattr(pp, 'sig_resolution_changed'):
+                pp.sig_resolution_changed.connect(self.c.update_canvas_resolution)
 
         # 3. MEDIA & ASSETS
         self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
