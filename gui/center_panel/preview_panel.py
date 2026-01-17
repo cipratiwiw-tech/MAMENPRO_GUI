@@ -1,127 +1,259 @@
-from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
-from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QBrush, QColor, QPainter
+# gui/center_panel/preview_panel.py
+import math
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
+    QGraphicsItem, QGraphicsRectItem, QToolButton, QGraphicsSimpleTextItem
+)
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF
+from PySide6.QtGui import (
+    QBrush, QPen, QColor, QPainter, QPixmap, QImage, QFont
+)
 
-from canvas.video_item import VideoItem
-from canvas.text_item import TextItem
+# ==========================================
+# CONSTANTS & CONFIG
+# ==========================================
+COLOR_ACCENT = QColor("#56b6c2")
+COLOR_BG = QColor("#1e1e1e")
+COLOR_SAFE = QColor(0, 255, 0, 60)
+COLOR_GUIDE = QColor(255, 255, 255, 50)
+HANDLE_SIZE = 12
 
-class PreviewPanel(QGraphicsView):
+class HandleType:
+    TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT, ROTATE = range(1, 6)
+
+# ==========================================
+# 1. PASSIVE VIDEO ITEM
+# ==========================================
+class VideoItem(QGraphicsRectItem):
+    """
+    Hanya container visual. 
+    Tidak punya akses ke Service/Engine.
+    Menerima QPixmap matang untuk ditampilkan.
+    """
+    def __init__(self, layer_id, layer_type, width=1280, height=720):
+        super().__init__(0, 0, width, height)
+        self.layer_id = layer_id
+        self.layer_type = layer_type
+        self.current_pixmap = None
+        
+        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
+        self.setBrush(QColor(30, 30, 30)) # Placeholder
+        self.setPen(Qt.NoPen)
+
+    def set_frame(self, frame):
+        """Menerima data visual mentah (QPixmap/QImage)"""
+        if isinstance(frame, QImage):
+            self.current_pixmap = QPixmap.fromImage(frame)
+        elif isinstance(frame, QPixmap):
+            self.current_pixmap = frame
+        else:
+            self.current_pixmap = None # Clear/Black
+        self.update() # Trigger repaint
+
+    def paint(self, painter, option, widget):
+        if self.current_pixmap and not self.current_pixmap.isNull():
+            painter.drawPixmap(self.rect().toRect(), self.current_pixmap)
+        else:
+            super().paint(painter, option, widget)
+            painter.setPen(Qt.white)
+            painter.drawText(self.boundingRect(), Qt.AlignCenter, f"{self.layer_type}\n{self.layer_id}")
+
+        # Hint border
+        painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(self.rect())
+
+
+# ==========================================
+# 2. GIZMOS (UI HELPER)
+# ==========================================
+class TransformHandle(QGraphicsRectItem):
+    def __init__(self, h_type, parent=None):
+        super().__init__(-HANDLE_SIZE/2, -HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE, parent)
+        self.setBrush(QBrush(COLOR_ACCENT))
+        self.setPen(QPen(Qt.black, 1))
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+
+class SelectionGizmo(QGraphicsRectItem):
+    def __init__(self, target=None):
+        super().__init__()
+        self.target = target
+        self.setPen(QPen(COLOR_ACCENT, 2, Qt.DashLine))
+        self.setBrush(Qt.NoBrush)
+        self.handles = [TransformHandle(i, self) for i in range(1, 6)]
+        if target: self.sync()
+
+    def sync(self):
+        if not self.target: return
+        self.setRect(self.target.boundingRect())
+        self.setPos(self.target.pos())
+        self.setRotation(self.target.rotation())
+        self.setScale(self.target.scale())
+        self.setTransformOriginPoint(self.target.transformOriginPoint())
+        
+        r = self.rect()
+        positions = {
+            1: r.topLeft(), 2: r.topRight(), 3: r.bottomLeft(), 4: r.bottomRight(),
+            5: QPointF(r.center().x(), r.top() - 25)
+        }
+        for i, h in enumerate(self.handles): h.setPos(positions[i+1])
+
+class GuideOverlay(QGraphicsItem):
+    def __init__(self, w=1920, h=1080):
+        super().__init__()
+        self.w, self.h = w, h
+        self.visible = False
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setZValue(9999)
+
+    def boundingRect(self): return QRectF(0, 0, self.w, self.h)
+    
+    def paint(self, painter, option, widget):
+        if not self.visible: return
+        painter.setPen(QPen(COLOR_GUIDE, 1, Qt.DashLine))
+        painter.drawLine(self.w/2, 0, self.w/2, self.h)
+        painter.drawLine(0, self.h/2, self.w, self.h/2)
+        
+        painter.setPen(QPen(COLOR_SAFE, 1))
+        m_w, m_h = self.w*0.05, self.h*0.05
+        painter.drawRect(QRectF(m_w, m_h, self.w-2*m_w, self.h-2*m_h))
+
+# ==========================================
+# 3. PREVIEW PANEL (MAIN CLASS)
+# ==========================================
+class PreviewPanel(QWidget):
+    sig_layer_selected = Signal(str)
+    sig_preview_command = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        # 1. Setup Canvas (FHD Default)
-        self.scene_width = 1920
-        self.scene_height = 1080
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0,0,0,0)
         
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
-        self.scene.setSceneRect(0, 0, self.scene_width, self.scene_height)
-        self.scene.setBackgroundBrush(QBrush(QColor("#000000"))) # Hitam Cinema
+        # Init View
+        self.scene = QGraphicsScene(0, 0, 1920, 1080)
+        self.scene.setBackgroundBrush(QBrush(COLOR_BG))
+        self.view = QGraphicsView(self.scene)
+        self.view.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.view)
         
-        # 2. Optimization Render
-        self.setRenderHint(QPainter.Antialiasing)
-        self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        # Overlays
+        self.guide = GuideOverlay()
+        self.scene.addItem(self.guide)
+        self.warning = QGraphicsSimpleTextItem("SERVICE DISCONNECTED")
+        self.warning.setBrush(QBrush(Qt.red))
+        self.warning.setFont(QFont("Arial", 20, QFont.Bold))
+        self.scene.addItem(self.warning)
         
-        # 3. UI Tweaks
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setDragMode(QGraphicsView.RubberBandDrag)
+        # State
+        self.items_map = {}
+        self.active_gizmo = None
+        self.video_service = None # Injected later
         
-        # 4. Registry
-        self.visual_registry = {} # Map ID -> QGraphicsItem
+        # Internal Events
+        self.scene.selectionChanged.connect(self._on_internal_select)
+        self._init_toolbar()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.fit_canvas()
-
-    def fit_canvas(self):
-        self.fitInView(
-            QRectF(0, 0, self.scene_width, self.scene_height), 
-            Qt.KeepAspectRatio
-        )
-
-    # =========================================================
-    # CORE VISUAL SYNC (JANTUNG VISUAL BARU)
-    # =========================================================
-
-    def sync_layer_visibility(self, active_ids: list):
-        """
-        [BARU] Menerima daftar ID yang HARUS muncul dari Controller.
-        PreviewPanel bertindak sebagai bos yang menyuruh item Show/Hide.
-        """
-        active_set = set(active_ids) # Ubah ke Set agar pencarian cepat
+    def _init_toolbar(self):
+        bar = QWidget()
+        bar.setStyleSheet("background:#252526;")
+        layout = QHBoxLayout(bar)
         
-        for layer_id, item in self.visual_registry.items():
-            should_show = layer_id in active_set
-            
-            # Optimasi: Hanya setVisible jika status benar-benar berubah
-            if item.isVisible() != should_show:
-                item.setVisible(should_show)
-                
-                # Opsional: Reset state jika item baru muncul
-                if should_show:
-                    item.update() 
+        btn_play = QToolButton(text="▶ Play")
+        btn_play.clicked.connect(lambda: self.sig_preview_command.emit("play"))
+        
+        btn_guide = QToolButton(text="# Guide")
+        btn_guide.setCheckable(True)
+        btn_guide.toggled.connect(lambda c: setattr(self.guide, 'visible', c) or self.guide.update())
+        
+        btn_fit = QToolButton(text="🔍 Fit")
+        btn_fit.clicked.connect(lambda: self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio))
+        
+        layout.addWidget(btn_play)
+        layout.addStretch()
+        layout.addWidget(btn_guide)
+        layout.addWidget(btn_fit)
+        self.layout.addWidget(bar)
 
-    def on_time_changed(self, t: float):
-        """
-        [BARU] Meneruskan waktu global ke setiap item yang SEDANG AKTIF.
-        Hanya untuk keperluan animasi internal (misal: video frame seeking),
-        BUKAN untuk menentukan visibility.
-        """
-        for item in self.visual_registry.values():
-            if item.isVisible() and hasattr(item, 'sync_frame'):
-                item.sync_frame(t)
-
-    # =========================================================
-    # CRUD VISUAL (STANDARD)
-    # =========================================================
+    # --- PUBLIC API (Dipanggil Binder) ---
     
-    def on_layer_created(self, layer_data):
-        if layer_data.id in self.visual_registry: return
-        
-        item = None
-        # Factory Sederhana
-        if layer_data.type == 'text':
-            item = TextItem(layer_data.id, layer_data.properties.get('text_content', 'Text'))
-        elif layer_data.type in ['video', 'image']:
-            item = VideoItem(layer_data.id, layer_data.path)
-            
-        if item:
-            # Set properti awal
-            item.update_properties(layer_data.properties, layer_data.z_index)
-            self.scene.addItem(item)
-            self.visual_registry[layer_data.id] = item
-            
-            # Default hide dulu, nanti Controller yang nyalakan via sync_layer_visibility
-            item.setVisible(False) 
-            
-    def on_layer_removed(self, layer_id):
-        if layer_id in self.visual_registry:
-            item = self.visual_registry[layer_id]
-            self.scene.removeItem(item)
-            del self.visual_registry[layer_id]
+    def set_video_service(self, service):
+        """Dependency Injection point"""
+        self.video_service = service
+        self.warning.setVisible(not service)
 
-    def clear_visual(self):
-        self.scene.clear()
-        self.visual_registry.clear()
+    def on_time_changed(self, t):
+        """Menerima waktu -> Minta Frame -> Update Item"""
+        if not self.video_service: return
 
-    def on_property_changed(self, layer_id, props):
-        if layer_id in self.visual_registry:
-            item = self.visual_registry[layer_id]
-            # Handle Z-Index khusus jika ada di props
-            if "z_index" in props:
-                item.setZValue(props["z_index"])
-            item.update_properties(props)
+        # Loop hanya item yang sedang visible (sudah disaring via sync_layer_visibility)
+        for lid, item in self.items_map.items():
+            if item.isVisible():
+                try:
+                    # FETCH FRAME DARI SERVICE
+                    frame = self.video_service.get_preview_frame(lid, t)
+                    item.set_frame(frame)
+                except Exception:
+                    item.set_frame(None)
 
-    def on_selection_changed(self, layer_data):
+    def sync_layer_visibility(self, active_ids):
+        """Menerima daftar ID aktif dari TimelineEngine (via Controller)"""
+        for lid, item in self.items_map.items():
+            item.setVisible(lid in active_ids)
+
+    def on_layer_created(self, data):
+        if data.id in self.items_map: return
+        item = VideoItem(data.id, getattr(data, 'type', 'media'))
+        props = data.properties
+        item.setPos(props.get('x',0), props.get('y',0))
+        item.setZValue(data.z_index)
+        self.scene.addItem(item)
+        self.items_map[data.id] = item
+
+    def on_layer_removed(self, lid):
+        if lid in self.items_map:
+            if self.active_gizmo and self.active_gizmo.target == self.items_map[lid]:
+                self.scene.removeItem(self.active_gizmo)
+                self.active_gizmo = None
+            self.scene.removeItem(self.items_map[lid])
+            del self.items_map[lid]
+
+    def on_property_changed(self, lid, props):
+        if lid in self.items_map:
+            item = self.items_map[lid]
+            if 'x' in props: item.setX(props['x'])
+            if 'y' in props: item.setY(props['y'])
+            if 'scale' in props: item.setScale(props['scale'])
+            if 'rotation' in props: item.setRotation(props['rotation'])
+            if self.active_gizmo and self.active_gizmo.target == item:
+                self.active_gizmo.sync()
+
+    def on_selection_changed(self, data):
+        self.scene.blockSignals(True)
         self.scene.clearSelection()
-        if layer_data and layer_data.id in self.visual_registry:
-            item = self.visual_registry[layer_data.id]
+        if data and data.id in self.items_map:
+            item = self.items_map[data.id]
             item.setSelected(True)
-            
-    def on_layers_reordered(self, updates):
-        for data in updates:
-            if data['id'] in self.visual_registry:
-                self.visual_registry[data['id']].setZValue(data['z_index'])
-        self.scene.update()
+            self._update_gizmo(item)
+        else:
+            self._update_gizmo(None)
+        self.scene.blockSignals(False)
+
+    # --- INTERNAL LOGIC ---
+    def _on_internal_select(self):
+        sel = self.scene.selectedItems()
+        target = sel[0] if sel and isinstance(sel[0], VideoItem) else None
+        self._update_gizmo(target)
+        self.sig_layer_selected.emit(target.layer_id if target else None)
+
+    def _update_gizmo(self, target):
+        if self.active_gizmo: 
+            self.scene.removeItem(self.active_gizmo)
+            self.active_gizmo = None
+        if target:
+            self.active_gizmo = SelectionGizmo(target)
+            self.scene.addItem(self.active_gizmo)
+
+    def resizeEvent(self, e):
+        self.view.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        super().resizeEvent(e)
