@@ -232,6 +232,18 @@ class TransformGizmo(QGraphicsItem):
         current_rot = self.parent_item.rotation()
         for handle in self.resize_handles:
             handle.update_cursor(current_rot)
+    def refresh(self):
+        """
+        Dipanggil saat parent berubah:
+        - pixmap berubah
+        - scale / rotate
+        - origin update
+        """
+        self.prepareGeometryChange()
+        self._update_layout()
+        self._refresh_cursors()
+        self.update()
+
 
     # --- 🔥 SCENE EVENT FILTER (JANTUNG UTAMA) 🔥 ---
     # Fungsi ini akan dipanggil SETIAP KALI ada mouse event pada salah satu handle.
@@ -295,6 +307,7 @@ class TransformGizmo(QGraphicsItem):
             
             self.parent_item.setRotation(angle)
             self._refresh_cursors() 
+            self.refresh()
 
         elif self._mode == 'SCALE':
             start_dist = math.hypot(self._start_pos.x() - cx, self._start_pos.y() - cy)
@@ -309,3 +322,4 @@ class TransformGizmo(QGraphicsItem):
             
             if new_scale < 0.1: new_scale = 0.1
             self.parent_item.setScale(new_scale)
+            self.refresh()
