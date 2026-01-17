@@ -124,6 +124,22 @@ class EditorController(QObject):
         total_dur = self.timeline.get_total_duration()
         self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
 
+    def move_layer_time(self, layer_id: str, new_start_time: float):
+        """
+        Menerima proposal perpindahan layer dari UI.
+        """
+        # 1. Validasi
+        if new_start_time < 0: new_start_time = 0.0
+        
+        # 2. Update Property (Ini akan memicu chain reaction: Sync Timeline -> Emit Changed)
+        self.state.selected_layer_id = layer_id # Pastikan terselect
+        
+        props = {"start_time": new_start_time}
+        self.update_layer_property(props)
+        
+        # 3. Optional: Print debug
+        print(f"[Controller] Layer {layer_id} moved to {new_start_time}s")
+        
     def delete_current_layer(self):
         current_id = self.state.selected_layer_id
         if current_id:
