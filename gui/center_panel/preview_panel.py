@@ -1,4 +1,3 @@
-# gui/center_panel/preview_panel.py
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QBrush, QColor, QPainter
@@ -10,128 +9,119 @@ class PreviewPanel(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # [FIX] 1. DEFINISIKAN UKURAN DULU (PENTING! Agar tidak error saat resize)
-        self.scene_width = 1080
-        self.scene_height = 1920
+        # 1. Setup Canvas (FHD Default)
+        self.scene_width = 1920
+        self.scene_height = 1080
         
-        # 2. Setup Scene (Kanvas)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        
-        # Gunakan variabel ukuran yang sudah dibuat di atas
         self.scene.setSceneRect(0, 0, self.scene_width, self.scene_height)
-        self.scene.setBackgroundBrush(QBrush(QColor("#1e1e1e")))
+        self.scene.setBackgroundBrush(QBrush(QColor("#000000"))) # Hitam Cinema
         
-        # Visual Helper
+        # 2. Optimization Render
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.RubberBandDrag)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         
-        # [BARU] Hilangkan Scrollbar agar bersih
+        # 3. UI Tweaks
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setDragMode(QGraphicsView.RubberBandDrag)
         
-        # Mapping ID -> Object Visual
-        self.visual_registry = {}
+        # 4. Registry
+        self.visual_registry = {} # Map ID -> QGraphicsItem
 
-    # [BARU] Auto Fit Logic: Agar canvas 1080x1920 selalu muat di kotak kecil
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.fit_canvas()
 
     def fit_canvas(self):
-        # Pastikan variabel sudah ada sebelum dipakai (Safety Check)
-        if hasattr(self, 'scene_width') and hasattr(self, 'scene_height'):
-            # Fit seluruh scene_rect ke dalam view, menjaga aspek rasio
-            self.fitInView(
-                QRectF(0, 0, self.scene_width, self.scene_height), 
-                Qt.KeepAspectRatio
-            )
-    
-    # --- SLOTS: REAKSI TERHADAP BINDER (LOGIC -> VIEW) ---
+        self.fitInView(
+            QRectF(0, 0, self.scene_width, self.scene_height), 
+            Qt.KeepAspectRatio
+        )
+
+    # =========================================================
+    # CORE VISUAL SYNC (JANTUNG VISUAL BARU)
+    # =========================================================
+
+    def sync_layer_visibility(self, active_ids: list):
+        """
+        [BARU] Menerima daftar ID yang HARUS muncul dari Controller.
+        PreviewPanel bertindak sebagai bos yang menyuruh item Show/Hide.
+        """
+        active_set = set(active_ids) # Ubah ke Set agar pencarian cepat
+        
+        for layer_id, item in self.visual_registry.items():
+            should_show = layer_id in active_set
+            
+            # Optimasi: Hanya setVisible jika status benar-benar berubah
+            if item.isVisible() != should_show:
+                item.setVisible(should_show)
+                
+                # Opsional: Reset state jika item baru muncul
+                if should_show:
+                    item.update() 
+
+    def on_time_changed(self, t: float):
+        """
+        [BARU] Meneruskan waktu global ke setiap item yang SEDANG AKTIF.
+        Hanya untuk keperluan animasi internal (misal: video frame seeking),
+        BUKAN untuk menentukan visibility.
+        """
+        for item in self.visual_registry.values():
+            if item.isVisible() and hasattr(item, 'sync_frame'):
+                item.sync_frame(t)
+
+    # =========================================================
+    # CRUD VISUAL (STANDARD)
+    # =========================================================
     
     def on_layer_created(self, layer_data):
-        item = None
+        if layer_data.id in self.visual_registry: return
         
-        # 1. Filter Visual Only
-        # Audio tidak perlu digambar di canvas preview visual
-        if layer_data.type == 'audio':
-            return 
-
-        # 2. Factory Logic Sederhana
+        item = None
+        # Factory Sederhana
         if layer_data.type == 'text':
             item = TextItem(layer_data.id, layer_data.properties.get('text_content', 'Text'))
-        else:
-            # Video / Image
+        elif layer_data.type in ['video', 'image']:
             item = VideoItem(layer_data.id, layer_data.path)
             
         if item:
+            # Set properti awal
             item.update_properties(layer_data.properties, layer_data.z_index)
             self.scene.addItem(item)
             self.visual_registry[layer_data.id] = item
-
+            
+            # Default hide dulu, nanti Controller yang nyalakan via sync_layer_visibility
+            item.setVisible(False) 
+            
     def on_layer_removed(self, layer_id):
         if layer_id in self.visual_registry:
             item = self.visual_registry[layer_id]
             self.scene.removeItem(item)
             del self.visual_registry[layer_id]
 
+    def clear_visual(self):
+        self.scene.clear()
+        self.visual_registry.clear()
+
     def on_property_changed(self, layer_id, props):
         if layer_id in self.visual_registry:
-            # Karena props adalah partial dict, kita tidak selalu punya z_index.
-            # Idealnya Binder mengirim full object atau Z-index terpisah.
-            # TAPI untuk simplifikasi, kita update properti visual saja.
-            # Jika Z-index berubah (via Reorder), kita butuh method khusus 'on_layer_reordered'.
-            
-            # Untuk sekarang, kita panggil update_properties tanpa mengubah z_index default (0)
-            # KECUALI jika props mengandung 'z_index' (dari controller)
-            
             item = self.visual_registry[layer_id]
-            current_z = item.zValue()
-            new_z = props.get("z_index", current_z) # Pakai yg baru jika ada
-            
-            item.update_properties(props, new_z)
-            self.scene.update()
+            # Handle Z-Index khusus jika ada di props
+            if "z_index" in props:
+                item.setZValue(props["z_index"])
+            item.update_properties(props)
 
     def on_selection_changed(self, layer_data):
-        # Bersihkan seleksi lama
         self.scene.clearSelection()
-        
         if layer_data and layer_data.id in self.visual_registry:
             item = self.visual_registry[layer_data.id]
             item.setSelected(True)
             
-    # [BARU] Handler Spesifik Z-Index
-    def on_layers_reordered(self, updates: list):
-        """
-        Menerima list dict: [{'id': '...', 'z_index': 0}, ...]
-        Hanya update tumpukan visual. Hemat resource.
-        """
+    def on_layers_reordered(self, updates):
         for data in updates:
-            layer_id = data['id']
-            new_z = data['z_index']
-            
-            if layer_id in self.visual_registry:
-                item = self.visual_registry[layer_id]
-                item.setZValue(new_z)
-                
-        # Trigger refresh scene
+            if data['id'] in self.visual_registry:
+                self.visual_registry[data['id']].setZValue(data['z_index'])
         self.scene.update()
-        print("[PREVIEW] Z-Indexes updated.")
-        
-    # [BARU] API Resmi untuk Binder
-    def clear_visual(self):
-        """Membersihkan seluruh scene dan registry visual."""
-        self.scene.clear()
-        self.visual_registry.clear()
-        print("[PREVIEW] Visual cleared.")
-        
-        # [BARU] Method yang dipanggil saat timer berjalan (Timeline Tick)
-    def on_time_changed(self, t):
-        # Broadcast waktu ke semua item visual
-        for item in self.visual_registry.values():
-            if hasattr(item, 'update_time'):
-                item.update_time(t)
-        
-        # Opsional: Paksa redraw scene jika ada artefak visual
-        # self.scene.update()

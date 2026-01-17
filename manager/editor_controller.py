@@ -191,10 +191,40 @@ class EditorController(QObject):
     def generate_auto_captions(self, config):
         self.cap_service.start_generate_async(self.state.get_layer(self.state.selected_layer_id).path, config)
 
-    def _on_caption_success(self, new_layers):
-        for l in new_layers:
-            self._insert_layer(l)
-        self.sig_status_message.emit(f"Generated {len(new_layers)} captions")
+    def _on_caption_success(self, layer_models: list):
+        """
+        Menerima list[LayerModel] dari CaptionService.
+        Tugas: Konversi ke LayerData agar bisa disimpan di State & Tampil di UI.
+        """
+        for model in layer_models:
+            # 1. Ekstrak Data dari Model Engine
+            # Payload berisi: text_content, font_size, dll (dari CaptionService)
+            props = model.payload.copy()
+            
+            # Tambahkan Data Waktu (PENTING)
+            props["start_time"] = model.time.start
+            props["duration"] = model.time.duration # duration diambil dari time.end - time.start
+            
+            # 2. Bungkus menjadi LayerData (Format UI/State)
+            # Buat nama layer yang unik
+            layer_name = f"Subtitle {model.id[:4]}"
+            
+            layer_data = LayerData(
+                id=model.id,
+                type=model.type, # 'text'
+                name=layer_name,
+                path=None        # Caption tidak punya file path fisik
+            )
+            
+            # Masukkan properties & Z-index
+            layer_data.properties.update(props)
+            layer_data.z_index = model.z_index
+            
+            # 3. Masukkan ke dalam Sistem (State + Timeline)
+            # _insert_layer akan otomatis memanggil _sync_layer_to_timeline
+            self._insert_layer(layer_data)
+            
+        self.sig_status_message.emit(f"Generated {len(layer_models)} captions")
 
     def _on_caption_error(self, msg):
         self.sig_status_message.emit(f"Error: {msg}")
