@@ -171,28 +171,25 @@ class EditorController(QObject):
         total_dur = self.timeline.get_total_duration()
         self.preview_engine.set_duration(max(total_dur + 1.0, 5.0))
 
-    def move_layer_time(self, layer_id: str, new_start_time: float, new_track_index: int = -1):
+    def move_layer_time(self, layer_id: str, new_start_time: float, track_index: int = -1):
+        """
+        [FIX] Menambahkan parameter track_index agar posisi track tersimpan.
+        """
         if new_start_time < 0: new_start_time = 0.0
         frame_start = self.time_to_frame(new_start_time)
         clean_start_time = self.frame_to_time(frame_start)
         
         self.state.selected_layer_id = layer_id
         
-        updates = {"start_time": clean_start_time}
+        # Siapkan properties untuk diupdate
+        props = {"start_time": clean_start_time}
         
-        # [Z-ORDER UPDATE VIA DRAG]
-        if new_track_index >= 0:
-            updates["track_index"] = new_track_index
-            # Recalculate Z-Index
-            new_z_index = 100 - new_track_index
-            updates["z_index"] = new_z_index
-            
-            # Update state object langsung untuk properti non-dict
-            layer = self.state.get_layer(layer_id)
-            if layer:
-                layer.z_index = new_z_index
+        # Simpan track_index jika valid (>= 0)
+        # Ini PENTING agar saat 'Add Media' (sync ulang), klip tetap di track yang benar
+        if track_index >= 0:
+            props["track_index"] = track_index
 
-        self.update_layer_property(layer_id, updates)
+        self.update_layer_property(layer_id, props)
         self.seek_to(clean_start_time)
 
     def delete_current_layer(self):
