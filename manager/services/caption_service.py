@@ -4,10 +4,14 @@ import time # Untuk simulasi delay
 from PySide6.QtCore import QObject, QThread, Signal
 from manager.project_state import LayerData
 
-# Nanti import engine asli: 
+# Nanti import engine asli di sini: 
 # from engine.caption.transcriber import assembly_transcribe
 
 class CaptionWorker(QThread):
+    """
+    Buruh yang bekerja di background thread.
+    Tugasnya: Terima path audio -> Proses AI (berat) -> Kirim data layer jadi.
+    """
     sig_finished = Signal(list) # Mengirim hasil (list of layers)
     sig_error = Signal(str)
 
@@ -21,11 +25,11 @@ class CaptionWorker(QThread):
             # --- DISINI LOGIC BERAT (AI) BERJALAN ---
             print(f"[WORKER] Starting AI Job for: {self.audio_path}")
             
-            # SIMULASI DELAY (Agar terlihat efek async-nya di UI)
-            # TODO: Nanti ganti dengan real processing time
+            # [SIMULASI] Delay 2 detik agar terasa efek async-nya di UI
+            # Nanti baris ini dihapus saat pakai engine asli
             time.sleep(2) 
             
-            # MOCK DATA
+            # MOCK DATA (Pura-pura hasil dari AI)
             mock_segments = [
                 {"text": "Halo semuanya", "start": 0.5, "end": 2.0},
                 {"text": "Selamat datang di", "start": 2.1, "end": 3.5},
@@ -78,9 +82,9 @@ class CaptionService(QObject):
         """
         Memulai proses captioning di thread terpisah.
         """
-        # [DEBT NOTE #1] Terminate adalah darurat.
-        # BAHAYA: Resource bisa bocor.
-        # TODO: Implementasi graceful cancellation (requestInterruption)
+        # [DEBT NOTE #1] Terminate adalah cara darurat/force kill.
+        # BAHAYA: Resource bisa bocor atau file corrupt jika keseringan.
+        # TODO FUTURE: Implementasi graceful cancellation (requestInterruption)
         if self.worker and self.worker.isRunning():
             print("[SERVICE] ⚠️ Terminating running worker forcefullly (DEBT)")
             self.worker.terminate()
@@ -89,7 +93,7 @@ class CaptionService(QObject):
         # Siapkan Worker Baru
         self.worker = CaptionWorker(audio_path, config)
         
-        # Sambungkan Kabel Signal
+        # Sambungkan Kabel Signal (Worker -> Service)
         self.worker.sig_finished.connect(self._on_worker_finished)
         self.worker.sig_error.connect(self.sig_fail)
         

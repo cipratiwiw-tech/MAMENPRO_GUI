@@ -1,22 +1,25 @@
 # gui/center_panel/preview_panel.py
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QBrush, QColor, QPainter
 
-# Import item-item visual yang baru kita buat
 from canvas.video_item import VideoItem
 from canvas.text_item import TextItem
 
 class PreviewPanel(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # [FIX] 1. DEFINISIKAN UKURAN DULU (PENTING! Agar tidak error saat resize)
+        self.scene_width = 1080
+        self.scene_height = 1920
         
-        # 1. Setup Scene (Kanvas)
+        # 2. Setup Scene (Kanvas)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         
-        # Ukuran Canvas (Misal 1080p Portrait)
-        self.scene.setSceneRect(0, 0, 1080, 1920)
+        # Gunakan variabel ukuran yang sudah dibuat di atas
+        self.scene.setSceneRect(0, 0, self.scene_width, self.scene_height)
         self.scene.setBackgroundBrush(QBrush(QColor("#1e1e1e")))
         
         # Visual Helper
@@ -24,9 +27,27 @@ class PreviewPanel(QGraphicsView):
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         
-        # Mapping ID -> Object Visual (Agar Binder bisa update item yg spesifik)
+        # [BARU] Hilangkan Scrollbar agar bersih
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # Mapping ID -> Object Visual
         self.visual_registry = {}
 
+    # [BARU] Auto Fit Logic: Agar canvas 1080x1920 selalu muat di kotak kecil
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_canvas()
+
+    def fit_canvas(self):
+        # Pastikan variabel sudah ada sebelum dipakai (Safety Check)
+        if hasattr(self, 'scene_width') and hasattr(self, 'scene_height'):
+            # Fit seluruh scene_rect ke dalam view, menjaga aspek rasio
+            self.fitInView(
+                QRectF(0, 0, self.scene_width, self.scene_height), 
+                Qt.KeepAspectRatio
+            )
+    
     # --- SLOTS: REAKSI TERHADAP BINDER (LOGIC -> VIEW) ---
     
     def on_layer_created(self, layer_data):
