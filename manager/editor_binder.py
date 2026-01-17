@@ -51,12 +51,15 @@ class EditorBinder(QObject):
             lp.sig_request_reorder.connect(self.c.reorder_layers)
 
         # 2. PREVIEW PANEL INTERACTION (✅ WAJIB ADA UNTUK DRAG & DROP)
+
         if hasattr(self.ui, 'preview_panel'):
             pp = self.ui.preview_panel
-            # Saat user geser objek di preview -> Update controller
             pp.sig_property_changed.connect(self.c.update_layer_property)
-            # Saat user klik objek di preview -> Select layer
             pp.sig_layer_selected.connect(self.c.select_layer)
+            
+            # 🔥 TAMBAHKAN INI: Agar tombol Delete & Menu Context berfungsi
+            if hasattr(pp, 'sig_request_delete'):
+                pp.sig_request_delete.connect(lambda lid: self.c.delete_current_layer())
 
         # 3. MEDIA & ASSETS
         self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)

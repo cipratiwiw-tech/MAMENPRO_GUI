@@ -2,10 +2,12 @@
 import math
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
-    QComboBox, QCheckBox, QToolButton, QFrame, QSizePolicy, QLabel 
+    QComboBox, QCheckBox, QToolButton, QFrame, QSizePolicy, QLabel, QMenu
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QPointF
-from PySide6.QtGui import QPainter, QColor, QBrush, QWheelEvent, QMouseEvent, QPen
+from PySide6.QtGui import (
+    QPainter, QColor, QBrush, QWheelEvent, QMouseEvent, QPen, QAction, QKeySequence
+)
 
 # Import Canvas Items
 from gui.center_panel.canvas_items.canvas_frame import CanvasFrameItem
@@ -23,7 +25,7 @@ class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         
-        # UI Bersih & Optimization
+        # UI Bersih
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QPainter.Antialiasing)
@@ -38,14 +40,11 @@ class ZoomableGraphicsView(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor("#151515")))
 
     def ensureVisible(self, *args, **kwargs):
-        # Matikan auto-scroll
         pass
 
     def wheelEvent(self, event: QWheelEvent):
-        # Zoom Logic
         zoom_in = 1.15
         zoom_out = 1 / zoom_in
-
         if event.angleDelta().y() > 0:
             self.scale(zoom_in, zoom_in)
         else:
@@ -57,6 +56,7 @@ class ZoomableGraphicsView(QGraphicsView):
 class PreviewPanel(QWidget):
     sig_property_changed = Signal(str, dict) 
     sig_layer_selected = Signal(str)
+    sig_request_delete = Signal(str) 
 
     CANVAS_PRESETS = {
         "9:16 (Tiktok/Reels)": (1080, 1920),
@@ -80,7 +80,7 @@ class PreviewPanel(QWidget):
         self.view = ZoomableGraphicsView(self.scene)
         self.layout.addWidget(self.view)
         
-        # 3. Setup Canvas Frame (Default Portrait)
+        # 3. Setup Canvas Frame
         self.canvas_width = 1080
         self.canvas_height = 1920
         self.canvas_frame = CanvasFrameItem(self.canvas_width, self.canvas_height)
@@ -94,7 +94,7 @@ class PreviewPanel(QWidget):
         self.video_service = None
         self.items_map = {} 
 
-        # 4. Init Toolbar (Dengan Timecode)
+        # 4. Init Toolbar
         self._init_toolbar()
         
         self.scene.selectionChanged.connect(self._on_internal_selection)
@@ -103,12 +103,12 @@ class PreviewPanel(QWidget):
     def _init_toolbar(self):
         bar = QFrame()
         bar.setStyleSheet("background: #252526; border-top: 1px solid #3e4451;")
-        bar.setFixedHeight(45) # Sedikit lebih tinggi untuk muat timecode
+        bar.setFixedHeight(45)
         
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 0, 10, 0)
         
-        # --- KIRI: Kontrol Canvas ---
+        # KIRI
         self.combo_ratio = QComboBox()
         self.combo_ratio.addItems(self.CANVAS_PRESETS.keys())
         self.combo_ratio.setCurrentIndex(0)
@@ -121,13 +121,12 @@ class PreviewPanel(QWidget):
         chk_grid.toggled.connect(lambda v: setattr(self.grid, 'visible', v) or self.grid.update())
         layout.addWidget(chk_grid)
 
-        # Spacer Kiri
         layout.addStretch()
         
-        # --- TENGAH: Timecode Display ---
+        # TENGAH
         self.lbl_time = QLabel("00:00:00")
         self.lbl_time.setAlignment(Qt.AlignCenter)
-        self.lbl_time.setFixedWidth(100) # Ukuran tetap agar tidak goyang saat angka berubah
+        self.lbl_time.setFixedWidth(100) 
         self.lbl_time.setStyleSheet("""
             QLabel {
                 color: #00AEEF; 
@@ -142,11 +141,10 @@ class PreviewPanel(QWidget):
         """)
         layout.addWidget(self.lbl_time)
         
-        # Spacer Kanan
         layout.addStretch()
         
-        # --- KANAN: Fit View ---
-        btn_fit = QToolButton(text="🔍 Fit")
+        # KANAN
+        btn_fit = QToolButton(text="🔍 Fit View")
         btn_fit.setStyleSheet("""
             QToolButton { color: white; border: 1px solid #555; border-radius: 3px; padding: 4px 8px; }
             QToolButton:hover { background: #3e4451; }
@@ -155,6 +153,135 @@ class PreviewPanel(QWidget):
         layout.addWidget(btn_fit)
         
         self.layout.addWidget(bar)
+
+    # --- 🔥 CONTEXT MENU 🔥 ---
+    
+    def contextMenuEvent(self, event):
+        scene_pos = self.view.mapToScene(event.pos())
+        items = self.scene.items(scene_pos)
+        
+        target_item = None
+        for i in items:
+            if isinstance(i, VideoLayerItem):
+                target_item = i
+                break
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2D2D30; color: #EEE; border: 1px solid #454545; }
+            QMenu::item { padding: 6px 24px; }
+            QMenu::item:selected { background-color: #007ACC; }
+        """)
+
+        if target_item:
+            act_reset = QAction("↺ Reset Transform", self)
+            act_reset.triggered.connect(lambda: self._action_reset(target_item))
+            menu.addAction(act_reset)
+            
+            act_center = QAction("🎯 Center to Canvas", self)
+            act_center.triggered.connect(lambda: self._action_center(target_item))
+            menu.addAction(act_center)
+            
+            act_fit = QAction("↔ Fit to Canvas", self)
+            act_fit.triggered.connect(lambda: self._action_fit(target_item))
+            menu.addAction(act_fit)
+            
+            menu.addSeparator()
+            
+            act_del = QAction("🗑️ Delete", self)
+            act_del.setShortcut(QKeySequence.Delete)
+            act_del.triggered.connect(lambda: self.sig_request_delete.emit(target_item.layer_id))
+            menu.addAction(act_del)
+            
+        else:
+            act_fit_view = QAction("🔍 Fit View", self)
+            act_fit_view.triggered.connect(self._fit_view)
+            menu.addAction(act_fit_view)
+        
+        menu.exec(event.globalPos())
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
+            selected_items = self.scene.selectedItems()
+            if selected_items:
+                for item in selected_items:
+                    if hasattr(item, 'layer_id'):
+                        self.sig_request_delete.emit(item.layer_id)
+                        self.on_layer_removed(item.layer_id)
+        else:
+            super().keyPressEvent(event)
+
+    # --- 🔥 LOGIKA AKSI YANG DIPERBAIKI (PRESISI) 🔥 ---
+
+    def _action_reset(self, item):
+        """
+        Reset Transform:
+        - Scale -> 100%
+        - Rotation -> 0
+        - Posisi X/Y -> TIDAK BERUBAH (Diam)
+        """
+        props = {"scale": 100, "rotation": 0}
+        self.sig_property_changed.emit(item.layer_id, props)
+
+    def _action_center(self, item):
+        """
+        Center to Canvas:
+        - Scale -> TIDAK BERUBAH
+        - Rotation -> TIDAK BERUBAH
+        - Posisi X/Y -> Pindah ke Center Canvas
+        """
+        # Dimensi Canvas
+        frame_rect = self.canvas_frame.rect()
+        canvas_cx = frame_rect.width() / 2
+        canvas_cy = frame_rect.height() / 2
+        
+        # Dimensi Item (Original/Unscaled)
+        # Karena transformOrigin kita set di center (w/2, h/2),
+        # maka Posisi Item agar visualnya center adalah:
+        # Pos = PusatCanvas - (SetengahUkuranAsli)
+        item_rect = item.boundingRect()
+        
+        final_x = canvas_cx - (item_rect.width() / 2)
+        final_y = canvas_cy - (item_rect.height() / 2)
+        
+        props = {"x": final_x, "y": final_y}
+        self.sig_property_changed.emit(item.layer_id, props)
+
+    def _action_fit(self, item):
+        """
+        Fit to Canvas:
+        - Scale -> Dihitung agar 'Contain' (muat) di canvas
+        - Rotation -> 0 (Reset)
+        - Posisi X/Y -> Pindah ke Center Canvas
+        """
+        frame_rect = self.canvas_frame.rect()
+        item_rect = item.boundingRect()
+        
+        if item_rect.width() > 0 and item_rect.height() > 0:
+            # Hitung Ratio
+            ratio_w = frame_rect.width() / item_rect.width()
+            ratio_h = frame_rect.height() / item_rect.height()
+            
+            # Gunakan min() untuk 'Fit/Contain' (agar seluruh gambar masuk)
+            # Gunakan max() jika ingin 'Cover' (agar tidak ada ruang kosong)
+            final_ratio = min(ratio_w, ratio_h)
+            
+            # Posisi Center (Sama rumusnya dengan _action_center karena Pivot di tengah)
+            canvas_cx = frame_rect.width() / 2
+            canvas_cy = frame_rect.height() / 2
+            
+            final_x = canvas_cx - (item_rect.width() / 2)
+            final_y = canvas_cy - (item_rect.height() / 2)
+            
+            props = {
+                "scale": int(final_ratio * 100),
+                "rotation": 0,
+                "x": final_x,
+                "y": final_y
+            }
+            self.sig_property_changed.emit(item.layer_id, props)
+
+    # --- STANDARD METHODS ---
 
     def _center_canvas_item(self):
         cx = -self.canvas_width / 2
@@ -176,28 +303,21 @@ class PreviewPanel(QWidget):
         view_rect = rect.adjusted(-margin, -margin, margin, margin)
         self.view.fitInView(view_rect, Qt.KeepAspectRatio)
 
-    # --- API ---
-
     def set_video_service(self, service):
         self.video_service = service
 
     def on_time_changed(self, t):
-        # 1. Update Video Frames
         if self.video_service:
             for _, item in self.items_map.items():
                 if item.isVisible() and isinstance(item, VideoLayerItem):
                     start = getattr(item, 'start_time', 0.0)
                     item.sync_frame(t - start, self.video_service)
         
-        # 2. Update Timecode Display (MM:SS:ms)
         total_seconds = int(t)
         rem_ms = int((t - total_seconds) * 100)
         mins = total_seconds // 60
         secs = total_seconds % 60
-        
-        # Format string 00:00:00
-        time_str = f"{mins:02d}:{secs:02d}:{rem_ms:02d}"
-        self.lbl_time.setText(time_str)
+        self.lbl_time.setText(f"{mins:02d}:{secs:02d}:{rem_ms:02d}")
 
     def sync_layer_visibility(self, active_ids):
         for lid, item in self.items_map.items():
@@ -205,15 +325,12 @@ class PreviewPanel(QWidget):
 
     def on_layer_created(self, layer_data):
         if layer_data.id in self.items_map: return
-
         item = VideoLayerItem(layer_data.id, layer_data.path)
         item.setParentItem(self.canvas_frame) 
-        
         props = layer_data.properties
         item.start_time = float(props.get("start_time", 0.0))
         item.update_transform(props)
         item.setZValue(layer_data.z_index)
-
         item.sig_transform_changed.connect(self.sig_property_changed)
         self.items_map[layer_data.id] = item
 
