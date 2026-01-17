@@ -2,7 +2,7 @@
 import math
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene, 
-    QComboBox, QCheckBox, QToolButton, QFrame, QSizePolicy
+    QComboBox, QCheckBox, QToolButton, QFrame, QSizePolicy, QLabel 
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QPointF
 from PySide6.QtGui import QPainter, QColor, QBrush, QWheelEvent, QMouseEvent, QPen
@@ -17,39 +17,32 @@ except ImportError:
     from canvas.video_item import VideoItem as VideoLayerItem
 
 # =============================================================================
-# VIEW: LOCKED CENTER (Anti Geser)
+# VIEW: LOCKED CENTER
 # =============================================================================
-class CenterGraphicsView(QGraphicsView):
+class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         
-        # 1. KUNCI POSISI DI TENGAH
-        # Memaksa view untuk selalu merender (0,0) scene di tengah viewport
-        self.setAlignment(Qt.AlignCenter)
-        
-        # 2. HILANGKAN SCROLLBARS
+        # UI Bersih & Optimization
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        # 3. RENDER QUALITY
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         
-        # 4. ZOOM ANCHOR
-        # Zoom tetap mengarah ke posisi mouse, tapi Viewport akan berusaha recenter
-        # karena Alignment=AlignCenter. Ini kombinasi terbaik untuk editor.
+        # Logic Center Lock
+        self.setAlignment(Qt.AlignCenter)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         
         self.setBackgroundBrush(QBrush(QColor("#151515")))
 
-    # 🔥 MATIKAN FITUR AUTO-SCROLL BAWAAN QT 🔥
     def ensureVisible(self, *args, **kwargs):
+        # Matikan auto-scroll
         pass
 
     def wheelEvent(self, event: QWheelEvent):
-        # Logic Zoom Custom
+        # Zoom Logic
         zoom_in = 1.15
         zoom_out = 1 / zoom_in
 
@@ -58,11 +51,8 @@ class CenterGraphicsView(QGraphicsView):
         else:
             self.scale(zoom_out, zoom_out)
 
-    # Kita matikan Manual Panning (Middle Click) agar konsisten "Diam di Tempat"
-    # User hanya bisa Zoom In/Out. Canvas selalu Center.
-
 # =============================================================================
-# MAIN PANEL
+# MAIN PREVIEW PANEL
 # =============================================================================
 class PreviewPanel(QWidget):
     sig_property_changed = Signal(str, dict) 
@@ -83,18 +73,14 @@ class PreviewPanel(QWidget):
 
         # 1. Setup Scene
         self.scene = QGraphicsScene()
-        
-        # 🔥 FIX: SET SCENE RECT RAKSASA & FIX 🔥
-        # Ini mencegah Scene "berubah ukuran" saat item di-drag keluar canvas.
-        # Dengan SceneRect tetap, titik tengah (0,0) tidak akan pernah bergeser.
         huge_size = 50000 
         self.scene.setSceneRect(-huge_size, -huge_size, huge_size * 2, huge_size * 2)
         
         # 2. Setup View
-        self.view = CenterGraphicsView(self.scene)
+        self.view = ZoomableGraphicsView(self.scene)
         self.layout.addWidget(self.view)
         
-        # 3. Setup Canvas Frame
+        # 3. Setup Canvas Frame (Default Portrait)
         self.canvas_width = 1080
         self.canvas_height = 1920
         self.canvas_frame = CanvasFrameItem(self.canvas_width, self.canvas_height)
@@ -103,51 +89,74 @@ class PreviewPanel(QWidget):
         self.grid = GridItem(self.canvas_width, self.canvas_height)
         self.canvas_frame.set_grid(self.grid)
         
-        # 🔥 POSISIKAN CANVAS DI TITIK (0,0) SCENE 🔥
-        # Agar Qt.AlignCenter bekerja sempurna, pusat canvas harus di (0,0).
-        # Karena CanvasFrame titik awalnya top-left, kita geser setengah ukurannya.
         self._center_canvas_item()
 
         self.video_service = None
         self.items_map = {} 
 
+        # 4. Init Toolbar (Dengan Timecode)
         self._init_toolbar()
         
         self.scene.selectionChanged.connect(self._on_internal_selection)
-        
-        # Auto Fit Awal
         QTimer.singleShot(100, self._fit_view)
 
     def _init_toolbar(self):
         bar = QFrame()
         bar.setStyleSheet("background: #252526; border-top: 1px solid #3e4451;")
-        bar.setFixedHeight(40)
+        bar.setFixedHeight(45) # Sedikit lebih tinggi untuk muat timecode
+        
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 0, 10, 0)
         
+        # --- KIRI: Kontrol Canvas ---
         self.combo_ratio = QComboBox()
         self.combo_ratio.addItems(self.CANVAS_PRESETS.keys())
         self.combo_ratio.setCurrentIndex(0)
         self.combo_ratio.currentTextChanged.connect(self._on_ratio_changed)
-        self.combo_ratio.setFixedWidth(150)
+        self.combo_ratio.setFixedWidth(140)
         layout.addWidget(self.combo_ratio)
 
         chk_grid = QCheckBox("Grid")
-        chk_grid.setStyleSheet("color: #ccc;")
+        chk_grid.setStyleSheet("color: #ccc; margin-left: 5px;")
         chk_grid.toggled.connect(lambda v: setattr(self.grid, 'visible', v) or self.grid.update())
         layout.addWidget(chk_grid)
 
+        # Spacer Kiri
         layout.addStretch()
         
-        btn_fit = QToolButton(text="🔍 Fit View")
-        btn_fit.setStyleSheet("color: white; border: 1px solid #555; padding: 3px;")
+        # --- TENGAH: Timecode Display ---
+        self.lbl_time = QLabel("00:00:00")
+        self.lbl_time.setAlignment(Qt.AlignCenter)
+        self.lbl_time.setFixedWidth(100) # Ukuran tetap agar tidak goyang saat angka berubah
+        self.lbl_time.setStyleSheet("""
+            QLabel {
+                color: #00AEEF; 
+                font-weight: bold; 
+                font-family: Consolas, Monospace; 
+                font-size: 16px;
+                background: #151515;
+                border: 1px solid #333;
+                border-radius: 4px;
+                padding: 2px 0px;
+            }
+        """)
+        layout.addWidget(self.lbl_time)
+        
+        # Spacer Kanan
+        layout.addStretch()
+        
+        # --- KANAN: Fit View ---
+        btn_fit = QToolButton(text="🔍 Fit")
+        btn_fit.setStyleSheet("""
+            QToolButton { color: white; border: 1px solid #555; border-radius: 3px; padding: 4px 8px; }
+            QToolButton:hover { background: #3e4451; }
+        """)
         btn_fit.clicked.connect(self._fit_view)
         layout.addWidget(btn_fit)
         
         self.layout.addWidget(bar)
 
     def _center_canvas_item(self):
-        """Memaksa Canvas Frame agar titik tengahnya ada di (0,0) Scene"""
         cx = -self.canvas_width / 2
         cy = -self.canvas_height / 2
         self.canvas_frame.setPos(cx, cy)
@@ -156,34 +165,39 @@ class PreviewPanel(QWidget):
         w, h = self.CANVAS_PRESETS.get(ratio_text, (1080, 1920))
         self.canvas_width = w
         self.canvas_height = h
-        
-        # Update ukuran & posisi ulang ke tengah
         self.canvas_frame.update_size(w, h)
         self._center_canvas_item()
-        
         self._fit_view()
 
     def _fit_view(self):
         self.view.resetTransform()
-        
-        # Kita fit ke bounding rect canvas frame
         rect = self.canvas_frame.sceneBoundingRect()
         margin = max(rect.width(), rect.height()) * 0.1
         view_rect = rect.adjusted(-margin, -margin, margin, margin)
-        
         self.view.fitInView(view_rect, Qt.KeepAspectRatio)
 
-    # --- BINDER / LOGIC ---
+    # --- API ---
 
     def set_video_service(self, service):
         self.video_service = service
 
     def on_time_changed(self, t):
-        if not self.video_service: return
-        for _, item in self.items_map.items():
-            if item.isVisible() and isinstance(item, VideoLayerItem):
-                start = getattr(item, 'start_time', 0.0)
-                item.sync_frame(t - start, self.video_service)
+        # 1. Update Video Frames
+        if self.video_service:
+            for _, item in self.items_map.items():
+                if item.isVisible() and isinstance(item, VideoLayerItem):
+                    start = getattr(item, 'start_time', 0.0)
+                    item.sync_frame(t - start, self.video_service)
+        
+        # 2. Update Timecode Display (MM:SS:ms)
+        total_seconds = int(t)
+        rem_ms = int((t - total_seconds) * 100)
+        mins = total_seconds // 60
+        secs = total_seconds % 60
+        
+        # Format string 00:00:00
+        time_str = f"{mins:02d}:{secs:02d}:{rem_ms:02d}"
+        self.lbl_time.setText(time_str)
 
     def sync_layer_visibility(self, active_ids):
         for lid, item in self.items_map.items():
