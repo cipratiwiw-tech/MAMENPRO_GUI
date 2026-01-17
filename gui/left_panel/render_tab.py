@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton,
                              QLineEdit, QComboBox, QFormLayout, QHBoxLayout)
 from PySide6.QtCore import Signal
 from gui.services.media_dialog_service import MediaDialogService
+import os # <--- [TAMBAHAN IMPORT]
 
 class RenderTab(QWidget):
     # SIGNAL OUT: User request render dengan config ini
@@ -57,17 +58,41 @@ class RenderTab(QWidget):
         layout.addWidget(self.btn_render)
 
     def _on_browse(self):
-        # Pakai Service UI helper
         path = MediaDialogService.get_save_location(self, self.txt_path.text())
         if path:
             self.txt_path.setText(path)
 
     def _on_render_click(self):
-        # Bungkus data form jadi Dictionary
+        # 1. Parsing Resolution
+        res_text = self.combo_res.currentText() 
+        res_part = res_text.split(" ")[0]       
+        w_str, h_str = res_part.split("x")
+        width = int(w_str)
+        height = int(h_str)
+
+        # 2. Parsing FPS
+        fps_text = self.combo_fps.currentText()
+        fps = int(fps_text.split(" ")[0])       
+
+        # 3. [PERBAIKAN VITAL] Validasi Ekstensi Path
+        raw_path = self.txt_path.text().strip()
+        if not raw_path:
+            raw_path = "output.mp4" # Default jika kosong
+            
+        # Cek apakah user lupa nulis .mp4
+        filename, ext = os.path.splitext(raw_path)
+        if not ext:
+            raw_path += ".mp4" # Paksa tambah .mp4
+        
+        # Update UI text agar user sadar
+        self.txt_path.setText(raw_path)
+
+        # 4. Bungkus Config
         config = {
-            "output_path": self.txt_path.text(),
-            "resolution": self.combo_res.currentText(),
-            "fps": self.combo_fps.currentText()
+            "path": raw_path, 
+            "width": width,
+            "height": height,
+            "fps": fps
         }
-        # EMIT SIGNAL
+        
         self.sig_request_render.emit(config)

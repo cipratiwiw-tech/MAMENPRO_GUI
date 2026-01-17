@@ -175,6 +175,13 @@ class PreviewPanel(QWidget):
         layout.addWidget(btn_fit)
         self.layout.addWidget(bar)
 
+    def _init_overlays(self):
+        # Re-add helper items jika scene di-clear
+        if self.guide not in self.scene.items():
+            self.scene.addItem(self.guide)
+        if self.warning not in self.scene.items():
+            self.scene.addItem(self.warning)
+            
     # --- PUBLIC API (Dipanggil Binder) ---
     
     def set_video_service(self, service):
