@@ -1,7 +1,7 @@
 # engine/render_engine.py
 import cv2
 import numpy as np
-import subprocess  # <--- WAJIB ADA
+import subprocess
 import os
 import tempfile
 from PySide6.QtGui import QImage, QPainter, QColor, QFont, QPen, QFontMetrics
@@ -11,7 +11,6 @@ from engine.ffmpeg_renderer import FFmpegRenderer
 from engine.chroma_processor import ChromaProcessor
 
 class RenderEngine:
-    # [FIX] Menerima timeline DAN video_service
     def __init__(self, timeline, video_service):
         self.timeline = timeline
         self.video_service = video_service
@@ -31,8 +30,6 @@ class RenderEngine:
         has_audio = self._mix_audio(temp_audio_path)
 
         print(f"[RENDER] Init FFmpeg: {width}x{height} @ {fps}fps")
-        
-        # [FIX] Mengirim argumen lengkap ke FFmpegRenderer
         self.renderer = FFmpegRenderer(output_path, width, height, fps)
         
         if has_audio:
@@ -44,11 +41,9 @@ class RenderEngine:
             for frame_idx in range(total_frames):
                 current_time = frame_idx / float(fps)
                 
-                # Logic Layering
                 active_layers = self.timeline.get_active_layers(current_time)
                 active_layers.sort(key=lambda x: x.z_index) 
                 
-                # Canvas
                 canvas = QImage(width, height, QImage.Format_ARGB32)
                 canvas.fill(QColor(0, 0, 0, 255)) 
                 painter = QPainter(canvas)
@@ -61,7 +56,6 @@ class RenderEngine:
                 
                 painter.end()
                 
-                # Write to FFmpeg
                 rgb_image = canvas.convertToFormat(QImage.Format_RGB888)
                 raw_bytes = rgb_image.constBits().tobytes()
                 self.renderer.write_frame(raw_bytes)
@@ -102,7 +96,25 @@ class RenderEngine:
                 start_offset = float(props.get("start_time", 0.0))
                 local_time = global_time - start_offset
                 
-                qimg = self.video_service.get_frame(layer.id, local_time, props)
+                # [FIX UTAMA DI SINI] 
+                # Bungkus ulang properti Flat (brightness) ke Nested (color.brightness)
+                # agar VideoService mengerti dan mau menerapkan efeknya.
+                render_props = {
+                    "color": {
+                        "brightness": props.get("brightness", 0),
+                        "contrast": props.get("contrast", 0),
+                        "saturation": props.get("saturation", 0),
+                        "hue": props.get("hue", 0),
+                        "temperature": props.get("temperature", 0),
+                    },
+                    "effect": {
+                        "blur": props.get("blur", 0),
+                        "vignette": props.get("vignette", 0),
+                    }
+                }
+                
+                # Kirim render_props yang sudah rapi
+                qimg = self.video_service.get_frame(layer.id, local_time, render_props)
                 
                 if not qimg.isNull():
                     if props.get("chroma_active", False):
@@ -164,6 +176,5 @@ class RenderEngine:
         creation_flags = 0
         if os.name == 'nt': creation_flags = subprocess.CREATE_NO_WINDOW
         
-        # [FIX] Pastikan subprocess diimport di atas
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creation_flags)
         return True
