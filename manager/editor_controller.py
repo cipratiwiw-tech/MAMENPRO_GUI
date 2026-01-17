@@ -90,8 +90,12 @@ class EditorController(QObject):
         state = "▶️ PLAYING" if is_playing else "⏸️ PAUSED"
         self.sig_status_message.emit(state)
 
-    # --- CRUD LAYERS ---
-    def add_new_layer(self, layer_type, path=None):
+    # --- CRUD LAYERS (CORE) ---
+    def add_new_layer(self, layer_type, path=None, properties=None):
+        """
+        Generic Add Layer: Inserts at TOP (Track 0) and pushes others down.
+        """
+        # 1. Shift existing layers down
         for existing in self.state.layers:
             curr_track = existing.properties.get('track_index', 0)
             new_track = curr_track + 1
@@ -104,16 +108,79 @@ class EditorController(QObject):
                 "z_index": existing.z_index
             })
 
+        # 2. Create new layer data
         new_id = str(uuid.uuid4())[:8]
         name = f"{layer_type.upper()} {len(self.state.layers) + 1}"
         layer_data = LayerData(id=new_id, type=layer_type, name=name, path=path)
+        
+        # 3. Apply Default & Custom Properties
         layer_data.properties['track_index'] = 0
         layer_data.z_index = 100 
+        
+        if properties:
+            layer_data.properties.update(properties)
 
-        if layer_type == 'text':
+        if layer_type == 'text' and 'text_content' not in layer_data.properties:
             layer_data.properties['text_content'] = "New Text"
             
         self._insert_layer(layer_data)
+
+    # --- INTENT METHODS (SPECIFIC LOGIC) ---
+    def add_text_layer(self, content="New Text", font_size=60):
+        """Intent: Add Text with specific preset"""
+        props = {
+            "text_content": content,
+            "font_size": font_size
+        }
+        self.add_new_layer("text", properties=props)
+        self.sig_status_message.emit("📝 Text Added")
+
+    def add_graphic_layer(self, path):
+        """Intent: Add Overlay/Sticker"""
+        self.add_new_layer("image", path=path)
+        self.sig_status_message.emit("★ Graphic Added")
+
+    def add_background_layer(self, path):
+        """
+        Intent: Add Background.
+        Rule: Place at BOTTOM track (highest track index), Lowest Z-Index.
+        Do NOT shift other layers.
+        """
+        if not path: return
+
+        # 1. Determine Bottom Track Index
+        current_max_track = 0
+        if self.state.layers:
+            current_max_track = max(l.properties.get('track_index', 0) for l in self.state.layers)
+        
+        new_track = current_max_track + 1
+        
+        # 2. Create Layer
+        new_id = str(uuid.uuid4())[:8]
+        name = f"BG {len(self.state.layers) + 1}"
+        
+        ext = os.path.splitext(path)[1].lower()
+        l_type = "video" if ext in ['.mp4', '.mov', '.avi', '.mkv'] else "image"
+        
+        layer_data = LayerData(id=new_id, type=l_type, name=name, path=path)
+        
+        # 3. Apply Background Specifics
+        layer_data.properties['track_index'] = new_track
+        layer_data.z_index = -100 # Always behind
+        
+        # Logic Fit to Canvas could be added here if we had media info access
+        # For now we rely on default or center logic
+        
+        # 4. Insert without shifting others
+        if os.path.exists(layer_data.path):
+            self.video_service.register_source(layer_data.id, layer_data.path)
+        
+        self.state.add_layer(layer_data)
+        self._sync_layer_to_timeline(layer_data)
+        
+        self.sig_layer_created.emit(layer_data)
+        self.sig_status_message.emit("🖼️ Background Added")
+
 
     def _insert_layer(self, layer_data: LayerData):
         if layer_data.type in ['video', 'image', 'audio'] and layer_data.path:
@@ -300,12 +367,20 @@ class EditorController(QObject):
         self._insert_layer(layer)
 
     def generate_auto_captions(self, config):
+        # Intent: Generate Caption
+        # This calls the service, which will eventually return layers via signal
         current = self.state.get_layer(self.state.selected_layer_id)
         if current and current.path:
             self.sig_status_message.emit("🎙️ Generating Captions...")
             self.cap_service.start_generate_async(current.path, config)
         else:
             self.sig_status_message.emit("⚠️ Select video layer first.")
+    
+    def process_bulk_render(self, bulk_data):
+        # Intent: Process Bulk (Placeholder logic for now)
+        # This would typically loop through data and create layers or render jobs
+        count = len(bulk_data.get("raw_data", []))
+        self.sig_status_message.emit(f"🚀 Bulk Process Started: {count} items")
 
     def _on_caption_success(self, layer_models: list):
         for model in layer_models:

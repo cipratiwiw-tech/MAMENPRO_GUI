@@ -50,41 +50,56 @@ class EditorBinder(QObject):
             lp.sig_request_delete.connect(self.c.delete_current_layer)
             lp.sig_request_reorder.connect(self.c.reorder_layers)
 
-        # 2. PREVIEW PANEL INTERACTION (✅ WAJIB ADA UNTUK DRAG & DROP)
-
+        # 2. PREVIEW PANEL INTERACTION
         if hasattr(self.ui, 'preview_panel'):
             pp = self.ui.preview_panel
             pp.sig_property_changed.connect(self.c.update_layer_property)
             pp.sig_layer_selected.connect(self.c.select_layer)
-            
-            # 🔥 TAMBAHKAN INI: Agar tombol Delete & Menu Context berfungsi
             if hasattr(pp, 'sig_request_delete'):
                 pp.sig_request_delete.connect(lambda lid: self.c.delete_current_layer())
-            
-            # 🔥 [NEW] WIRING RESOLUSI AGAR RENDER IKUT PORTRAIT/LANDSCAPE
             if hasattr(pp, 'sig_resolution_changed'):
                 pp.sig_resolution_changed.connect(self.c.update_canvas_resolution)
 
-        # 3. MEDIA & ASSETS
-        self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
-        self.ui.audio_tab.sig_request_add_audio.connect(self.c.add_audio_layer)
-        self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
-        
-        # 4. PROPERTIES (PANEL KANAN)
+        # 3. PROPERTIES
         self.ui.setting_panel.sig_property_update.connect(self.c.update_layer_property)
         
-        # 5. RENDER (✅ NAMA SINYAL DIPERBAIKI)
+        # 4. RENDER
         self.ui.render_tab.sig_start_render.connect(self.c.process_render)
         
-        # 6. MENU ACTIONS
+        # 5. MENU ACTIONS
         self.ui.action_save.triggered.connect(self._on_menu_save)
         self.ui.action_open.triggered.connect(self._on_menu_open)
         self.ui.action_play.triggered.connect(self.c.toggle_play)
 
-        # 7. CAPTION & CHROMA
-        self.ui.caption_panel.sig_request_caption.connect(self.c.generate_auto_captions)
+        # --- LEFT PANEL CONNECTIONS ---
+        
+        # Media Panel
+        self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
+        
+        # Text Panel (Intent)
+        self.ui.text_panel.sig_add_text.connect(self.c.add_text_layer)
+        
+        # Background Panel (Intent)
+        self.ui.bg_panel.sig_set_background.connect(self.c.add_background_layer)
+        
+        # Templates
+        self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
+        
+        # Graphics Panel (Intent)
+        self.ui.graphics_panel.sig_add_graphic.connect(self.c.add_graphic_layer)
+        
+        # Chroma Panel
         self.ui.chroma_panel.sig_apply_chroma.connect(self.c.apply_chroma_config)
         self.ui.chroma_panel.sig_remove_chroma.connect(self.c.remove_chroma_config)
+        
+        # Audio Panel
+        self.ui.audio_tab.sig_request_add_audio.connect(self.c.add_audio_layer)
+        
+        # Utilities Panel (Nested)
+        # Caption Logic
+        self.ui.util_panel.caption_panel.sig_request_caption.connect(self.c.generate_auto_captions)
+        # Bulk Logic
+        self.ui.util_panel.bulk_panel.sig_start_bulk.connect(self.c.process_bulk_render)
 
     # --- HANDLERS ---
 
@@ -104,16 +119,12 @@ class EditorBinder(QObject):
     def _on_layer_cleared(self):
         self.ui.preview_panel.items_map.clear()
         self.ui.preview_panel.scene.clear()
-        # Re-add canvas frame & grid
         if hasattr(self.ui.preview_panel, 'canvas_frame'):
             self.ui.preview_panel.scene.addItem(self.ui.preview_panel.canvas_frame)
 
     def _on_selection_changed(self, layer_data):
         self.ui.preview_panel.on_selection_changed(layer_data)
-        
-        # Kirim data hanya ke SettingPanel (dia sudah pintar handle text/video)
-        self.ui.setting_panel.set_values(layer_data) # Kirim object full, bukan cuma props     
-              
+        self.ui.setting_panel.set_values(layer_data)     
         if layer_data:
             self.ui.layer_panel.select_item_visual(layer_data.id)
 
@@ -127,6 +138,3 @@ class EditorBinder(QObject):
     def _on_menu_open(self):
         path, _ = QFileDialog.getOpenFileName(self.ui, "Open Project", "", "JSON Files (*.json)")
         if path: self.c.load_project(path)
-        
-    def on_property_update(self, payload):
-        print("[CONTROLLER]", payload)
