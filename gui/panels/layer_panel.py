@@ -3,23 +3,23 @@
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem, QGraphicsItem
 from PySide6.QtCore import Qt, Signal, QRectF, QPointF
 from PySide6.QtGui import QBrush, QColor, QPen, QFont, QPainter, QWheelEvent
+import math
 
 # ==========================================
 # KONSTANTA TAMPILAN
 # ==========================================
-HEADER_HEIGHT = 40          # Tinggi Ruler
-TRACK_HEADER_WIDTH = 120    # Lebar Panel Nama Track (Kiri)
+HEADER_HEIGHT = 45          
+TRACK_HEADER_WIDTH = 120    
 RULER_BG = "#1e1e1e"
-SIDEBAR_BG = "#21252b"      # Warna background nama track
+SIDEBAR_BG = "#21252b"      
 TRACK_BG_EVEN = "#282c34" 
 TRACK_BG_ODD = "#262a30"  
 GRID_COLOR = "#3e4451"
 
+# LOGIKA WAKTU
+FPS = 30.0 # Basis perhitungan Frame
+
 class TimelineClipItem(QGraphicsRectItem):
-    """
-    Representasi Visual Clip.
-    Sekarang memperhitungkan TRACK_HEADER_WIDTH agar tidak tertutup panel kiri.
-    """
     def __init__(self, layer_data, row_index, parent_view):
         super().__init__()
         self.layer_id = layer_data.id
@@ -30,7 +30,6 @@ class TimelineClipItem(QGraphicsRectItem):
         self.current_start_time = float(layer_data.properties.get("start_time", 0.0))
         self.duration = float(layer_data.properties.get("duration", 5.0))
 
-        # Setup Visual
         self.setFlags(QGraphicsItem.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
         
@@ -45,14 +44,11 @@ class TimelineClipItem(QGraphicsRectItem):
         self.setPen(QPen(QColor("#ffffff"), 1))
         self.setOpacity(0.9)
         
-        # Label Nama Clip
         self.text = QGraphicsTextItem(self.layer_name, self)
         self.text.setDefaultTextColor(QColor("white"))
-        self.font_small = QFont("Segoe UI", 8)
-        self.text.setFont(self.font_small)
+        self.text.setFont(QFont("Segoe UI", 8))
         self.text.setPos(5, 0)
 
-        # Dragging State
         self._is_dragging = False
         self._drag_start_x = 0
         self._initial_pos_x = 0
@@ -60,22 +56,17 @@ class TimelineClipItem(QGraphicsRectItem):
         self.update_geometry()
 
     def update_geometry(self):
-        """Hitung ulang posisi pixel. Start clip dimulai SETELAH Header Kiri"""
         zoom = self.parent_view.zoom_level
         t_height = self.parent_view.track_height 
         
-        # X Position = Offset Header + (Waktu * Zoom)
         x_pos = TRACK_HEADER_WIDTH + (self.current_start_time * zoom)
         width = self.duration * zoom
-        
-        # Y Position
         y_pos = HEADER_HEIGHT + (self.row_index * t_height) + 1
         height = t_height - 2 
 
         self.setRect(0, 0, width, height)
         self.setPos(x_pos, y_pos)
 
-        # Hide text jika track terlalu sempit
         if t_height < 25:
             self.text.setVisible(False)
         else:
@@ -96,17 +87,15 @@ class TimelineClipItem(QGraphicsRectItem):
         if self._is_dragging:
             current_x = event.scenePos().x()
             delta = current_x - self._drag_start_x
-            
-            # Batasi agar tidak menabrak Header Kiri
             new_x = max(TRACK_HEADER_WIDTH, self._initial_pos_x + delta)
             
             self.setPos(new_x, self.y())
             
-            # Hitung waktu (kurangi offset header dulu)
             real_pixel = new_x - TRACK_HEADER_WIDTH
             new_time = real_pixel / self.parent_view.zoom_level
             
-            self.setToolTip(f"Start: {self.parent_view._format_time(new_time)}")
+            # Format Tooltip Tetap Lengkap
+            self.setToolTip(f"Start: {self.parent_view.format_time_full(new_time)}")
         else:
             super().mouseMoveEvent(event)
 
@@ -117,24 +106,18 @@ class TimelineClipItem(QGraphicsRectItem):
             self.setCursor(Qt.ArrowCursor)
             
             final_pixel_x = self.pos().x()
-            
-            # Konversi Pixel -> Waktu (Inverse Logic)
             new_start_time = (final_pixel_x - TRACK_HEADER_WIDTH) / self.parent_view.zoom_level
             
-            if abs(new_start_time - self.current_start_time) > 0.01:
+            if abs(new_start_time - self.current_start_time) > 0.001:
                 self.parent_view.sig_request_move.emit(self.layer_id, new_start_time)
             else:
                 self.update_geometry() 
         super().mouseReleaseEvent(event)
-
+        
     def itemChange(self, change, value):
         if change == QGraphicsRectItem.ItemSelectedChange:
-            if value:
-                self.setPen(QPen(QColor("#00AEEF"), 2))
-                self.setZValue(10)
-            else:
-                self.setPen(QPen(QColor("#ffffff"), 1))
-                self.setZValue(0)
+            self.setPen(QPen(QColor("#00AEEF"), 2) if value else QPen(QColor("#ffffff"), 1))
+            self.setZValue(10 if value else 0)
         return super().itemChange(change, value)
 
 
@@ -144,7 +127,7 @@ class LayerPanel(QGraphicsView):
     sig_layer_selected = Signal(str)       
     sig_request_move = Signal(str, float)
     
-    # Legacy Signals
+    # Binder Signals
     sig_request_add = Signal(str)          
     sig_request_delete = Signal()
     sig_request_reorder = Signal(int, int)
@@ -155,21 +138,19 @@ class LayerPanel(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         
-        # UI Settings
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setRenderHint(QPainter.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
 
-        # Matikan Anchor agar scroll manual presisi
         self.setResizeAnchor(QGraphicsView.NoAnchor)
         self.setTransformationAnchor(QGraphicsView.NoAnchor)
 
         # State Variables
-        self.zoom_level = 50.0 
-        self.min_zoom = 5.0
-        self.max_zoom = 600.0
+        self.zoom_level = 50.0  
+        self.min_zoom = 1.0     
+        self.max_zoom = 600.0   
         
         self.track_height = 50 
         self.min_track_height = 25
@@ -177,7 +158,6 @@ class LayerPanel(QGraphicsView):
 
         self.clip_registry = {}
         self.last_layers_data = [] 
-        self.track_names = [] # Menyimpan nama track V1, V2, dll
 
         # Playhead
         self.playhead = QGraphicsLineItem()
@@ -196,15 +176,14 @@ class LayerPanel(QGraphicsView):
 
         if modifiers == Qt.ControlModifier:
             # === ZOOM TIMELINE ===
-            factor = 1.1 if delta > 0 else 0.9
+            factor = 1.05 if delta > 0 else 0.95
             new_zoom = max(self.min_zoom, min(self.zoom_level * factor, self.max_zoom))
             
             if new_zoom != self.zoom_level:
-                # Pivot Zoom Logic
                 current_scroll = self.horizontalScrollBar().value()
                 viewport_width = self.viewport().width()
                 
-                # Hitung waktu tengah layar (dikurangi offset header)
+                # Logic Center Zoom
                 view_start_time = max(0, (current_scroll - TRACK_HEADER_WIDTH) / self.zoom_level)
                 center_offset_sec = (viewport_width / 2) / self.zoom_level
                 center_time = view_start_time + center_offset_sec
@@ -212,8 +191,6 @@ class LayerPanel(QGraphicsView):
                 self.zoom_level = new_zoom
                 self._refresh_layout()
                 
-                # Kembalikan posisi scroll
-                # Pixel = Header + (Time * Zoom)
                 new_center_pixel = TRACK_HEADER_WIDTH + (center_time * self.zoom_level)
                 target_scroll = new_center_pixel - (viewport_width / 2)
                 self.horizontalScrollBar().setValue(int(target_scroll))
@@ -221,7 +198,7 @@ class LayerPanel(QGraphicsView):
             event.accept()
 
         elif modifiers == Qt.ShiftModifier:
-            # === RESIZE TRACK HEIGHT ===
+            # === RESIZE TRACK ===
             step = 5 if delta > 0 else -5
             new_height = max(self.min_track_height, min(self.track_height + step, self.max_track_height))
             
@@ -232,7 +209,6 @@ class LayerPanel(QGraphicsView):
                 self.verticalScrollBar().setValue(current_v_scroll)
                 
             event.accept()
-            
         else:
             # === SCROLL HORIZONTAL ===
             h_bar = self.horizontalScrollBar()
@@ -241,7 +217,6 @@ class LayerPanel(QGraphicsView):
             event.accept()
 
     def _refresh_layout(self):
-        """Update layout & scene rect"""
         for clip in self.clip_registry.values():
             clip.update_geometry()
             
@@ -251,7 +226,6 @@ class LayerPanel(QGraphicsView):
             end = float(l.properties.get("start_time", 0)) + float(l.properties.get("duration", 0))
             if end > max_duration: max_duration = end
 
-        # Width = Header + Timeline Area + Buffer
         width = TRACK_HEADER_WIDTH + (max(30.0, max_duration) * self.zoom_level) + 1000 
         height = HEADER_HEIGHT + (max(10, layer_count) * self.track_height) + 200
         
@@ -260,7 +234,81 @@ class LayerPanel(QGraphicsView):
         self.viewport().update()
 
     # ==========================================
-    # RENDERING BACKGROUND (GRID)
+    # LOGIKA RULER ADAPTIF (CORE UPGRADE)
+    # ==========================================
+    def get_ruler_settings(self):
+        """
+        Return: (interval_detik, jumlah_sub_tick, tipe_format)
+        """
+        px_per_sec = self.zoom_level
+        
+        # ZOOM DEKAT (FRAME)
+        if px_per_sec >= 150:
+            if px_per_sec > 400:
+                return (1.0/FPS * 5, 5, 'frame') # Per 5 Frame
+            elif px_per_sec > 250:
+                 return (1.0/FPS * 10, 10, 'frame') # Per 10 Frame
+            else:
+                 return (0.5, 5, 'frame') # Per 0.5 detik (15 frame)
+
+        # ZOOM MENENGAH (DETIK)
+        elif px_per_sec >= 40:
+            if px_per_sec >= 80:
+                return (1.0, 10, 'sec') # 1 Detik
+            else:
+                return (2.0, 4, 'sec')  # 2 Detik
+
+        # ZOOM JAUH (PULUHAN DETIK)
+        elif px_per_sec >= 10:
+             if px_per_sec >= 20:
+                 return (5.0, 5, 'sec') 
+             else:
+                 return (10.0, 10, 'sec')
+                 
+        # ZOOM SANGAT JAUH (MENIT)
+        else:
+            if px_per_sec >= 2:
+                return (30.0, 6, 'min') # 30 Detik
+            elif px_per_sec >= 0.5:
+                return (60.0, 6, 'min') # 1 Menit
+            else:
+                return (300.0, 5, 'min') # 5 Menit
+
+    def format_time_label(self, seconds, fmt_type):
+        """
+        Logika Format Label Sesuai Request:
+        - Frame: "5f", "10f", tapi pas detik bulat jadi "00:01"
+        - Detik/Menit: Selalu "MM:SS" (00:01, 01:00)
+        """
+        # Cek apakah detik bulat (toleransi float)
+        # misal 1.0000001 dianggap 1.0
+        is_whole_second = abs(seconds - round(seconds)) < 0.001
+        
+        rounded_sec = int(round(seconds))
+        mm = int(rounded_sec // 60)
+        ss = int(rounded_sec % 60)
+        
+        if fmt_type == 'frame':
+            if is_whole_second:
+                # Pas di detik -> Format Waktu "00:01"
+                return f"{mm:02d}:{ss:02d}"
+            else:
+                # Di pecahan detik -> Format Frame "5f"
+                frame_num = int(round((seconds - int(seconds)) * FPS))
+                return f"{frame_num}f"
+        
+        # Default (Sec/Min): Selalu MM:SS
+        return f"{mm:02d}:{ss:02d}"
+
+    def format_time_full(self, seconds):
+        """Format Tooltip Clip (Lengkap)"""
+        mm = int(seconds // 60)
+        ss = int(seconds % 60)
+        ff = int((seconds - int(seconds)) * FPS)
+        return f"{mm:02d}:{ss:02d}:{ff:02d}"
+
+    # ==========================================
+    # RENDERING
     # ==========================================
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
@@ -270,181 +318,129 @@ class LayerPanel(QGraphicsView):
         bottom = int(rect.bottom())
         left = int(rect.left())
         right = int(rect.right())
-        
         th = self.track_height
         
-        # --- 1. Gambar Track (Horizontal Zebra) ---
+        # 1. Zebra Track
         first_track_idx = max(0, (top - HEADER_HEIGHT) // th)
         current_y = HEADER_HEIGHT + (first_track_idx * th)
-        track_idx = first_track_idx
-
+        
         while current_y < bottom:
-            if track_idx % 2 == 0:
-                track_rect = QRectF(left, current_y, right - left, th)
-                painter.fillRect(track_rect, QColor(TRACK_BG_EVEN))
-            
-            # Garis pembatas track
+            idx = (current_y - HEADER_HEIGHT) // th
+            if idx % 2 == 0:
+                painter.fillRect(QRectF(left, current_y, right - left, th), QColor(TRACK_BG_EVEN))
             painter.setPen(QPen(QColor(GRID_COLOR), 1))
             painter.drawLine(left, current_y, right, current_y)
-
             current_y += th
-            track_idx += 1
             
-        # --- 2. Gambar Grid Waktu (Vertikal) ---
-        # Grid dimulai SETELAH Header Width
-        min_px = 100
-        step = self._calculate_adaptive_step(min_px / self.zoom_level)
+        # 2. Grid Waktu
+        major_step, _, _ = self.get_ruler_settings()
         
-        # Hitung waktu visible start (dikurangi header)
         visible_start_x = max(TRACK_HEADER_WIDTH, left)
-        start_t_offset = (visible_start_x - TRACK_HEADER_WIDTH) / self.zoom_level
-        start_t = int(start_t_offset / step) * step
+        # Mulai dari kelipatan major_step terdekat
+        start_t = int((visible_start_x - TRACK_HEADER_WIDTH) / self.zoom_level / major_step) * major_step
         
         t = start_t
         while True:
-            # Posisi X absolut di scene
             x = TRACK_HEADER_WIDTH + (t * self.zoom_level)
-            
             if x > right: break
-            if x >= TRACK_HEADER_WIDTH: # Jangan gambar di area header
+            
+            if x >= TRACK_HEADER_WIDTH:
                 painter.setPen(QPen(QColor(GRID_COLOR), 1, Qt.DotLine))
                 painter.drawLine(x, max(top, HEADER_HEIGHT), x, bottom)
-            t += step
+            t += major_step
 
-    # ==========================================
-    # RENDERING FOREGROUND (HEADER & RULER)
-    # ==========================================
     def drawForeground(self, painter: QPainter, rect: QRectF):
-        """
-        Menggambar elemen 'Sticky' yang menempel di layar.
-        rect.left() adalah batas kiri layar yang terlihat saat ini.
-        """
         super().drawForeground(painter, rect)
         
-        left_edge = rect.left()
-        top_edge = rect.top()
-        width_visible = rect.width()
+        left = rect.left()
+        top = rect.top()
+        width = rect.width()
         
-        # --- 1. RULER AREA (TOP) ---
-        # Ruler harus digambar relatif terhadap scene X, TAPI
-        # Area header (kiri) harus kosong.
+        # --- RULER BG ---
+        painter.fillRect(QRectF(left, top, width, HEADER_HEIGHT), QColor(RULER_BG))
+        painter.setPen(QPen(QColor("#000"), 1))
+        painter.drawLine(left, top + HEADER_HEIGHT, left + width, top + HEADER_HEIGHT)
+
+        # --- DRAW TICKS ---
+        major_step, ticks_per_major, fmt_type = self.get_ruler_settings()
         
-        ruler_rect = QRectF(left_edge, top_edge, width_visible, HEADER_HEIGHT)
-        painter.fillRect(ruler_rect, QColor(RULER_BG))
+        start_scene_x = max(TRACK_HEADER_WIDTH, left)
+        start_idx = int((start_scene_x - TRACK_HEADER_WIDTH) / self.zoom_level / major_step)
         
-        min_px = 80
-        step = self._calculate_adaptive_step(min_px / self.zoom_level)
-        
-        # Loop Ruler Ticks
-        # Mulai hitung waktu dari sisi kiri layar atau dari 0 (mana yg lebih besar)
-        start_scene_x = max(TRACK_HEADER_WIDTH, left_edge)
-        start_t_val = (start_scene_x - TRACK_HEADER_WIDTH) / self.zoom_level
-        start_t = int(start_t_val / step) * step
+        current_t = start_idx * major_step
+        end_scene_x = left + width
         
         font = QFont("Segoe UI", 8)
         painter.setFont(font)
-        
-        current_t = start_t
-        end_scene_x = left_edge + width_visible
+        fm = painter.fontMetrics()
         
         while True:
             pos_x = TRACK_HEADER_WIDTH + (current_t * self.zoom_level)
-            
             if pos_x > end_scene_x: break
             
-            # Hanya gambar jika di sebelah kanan header
             if pos_x >= TRACK_HEADER_WIDTH:
-                # Tick
+                # 1. Major Tick
                 painter.setPen(QPen(QColor("#ccc"), 1))
-                painter.drawLine(pos_x, top_edge + 20, pos_x, top_edge + HEADER_HEIGHT)
+                painter.drawLine(pos_x, top + 20, pos_x, top + HEADER_HEIGHT)
                 
-                # Text
-                time_str = self._format_time(current_t)
-                fm = painter.fontMetrics()
-                tw = fm.horizontalAdvance(time_str)
-                painter.drawText(pos_x - tw/2, top_edge + 15, time_str)
+                # Label Logic
+                label = self.format_time_label(current_t, fmt_type)
+                tw = fm.horizontalAdvance(label)
                 
-                # Subticks
-                self._draw_sub_ticks(painter, top_edge, pos_x, step, self.zoom_level)
+                # Hindari label 00:00 menabrak header kiri
+                label_x = pos_x - tw/2
+                if label_x < TRACK_HEADER_WIDTH + 2:
+                    label_x = TRACK_HEADER_WIDTH + 5
                 
-            current_t += step
-            
-        # --- 2. SIDEBAR HEADER TRACKS (LEFT) ---
-        # Ini adalah kotak yang "Sticky" di kiri. Posisinya selalu di rect.left()
-        
-        sidebar_rect = QRectF(left_edge, top_edge + HEADER_HEIGHT, TRACK_HEADER_WIDTH, rect.height() - HEADER_HEIGHT)
-        painter.fillRect(sidebar_rect, QColor(SIDEBAR_BG))
-        
-        # Garis pemisah sidebar dengan timeline
-        painter.setPen(QPen(QColor("#000"), 1))
-        painter.drawLine(left_edge + TRACK_HEADER_WIDTH, top_edge, 
-                         left_edge + TRACK_HEADER_WIDTH, rect.bottom())
+                painter.drawText(label_x, top + 15, label)
+                
+                # 2. Minor Tick
+                if ticks_per_major > 1:
+                    minor_step_time = major_step / ticks_per_major
+                    minor_step_px = minor_step_time * self.zoom_level
+                    
+                    painter.setPen(QPen(QColor("#666"), 1))
+                    for i in range(1, ticks_per_major):
+                        sub_x = pos_x + (i * minor_step_px)
+                        if sub_x > end_scene_x: break
+                        
+                        tick_top = top + 32 # Default pendek
+                        if i == ticks_per_major / 2: 
+                             tick_top = top + 28 # Tengah agak panjang
+                        
+                        painter.drawLine(sub_x, tick_top, sub_x, top + HEADER_HEIGHT)
 
-        # Loop Label Track Nama
-        th = self.track_height
-        first_track_idx = max(0, (int(top_edge) - HEADER_HEIGHT) // th)
-        # Batasi loop agar tidak terlalu banyak (optimasi view)
-        tracks_visible_count = int(rect.height() // th) + 2
+            current_t += major_step
+
+        # --- SIDEBAR HEADER ---
+        painter.fillRect(QRectF(left, top + HEADER_HEIGHT, TRACK_HEADER_WIDTH, rect.height()), QColor(SIDEBAR_BG))
+        painter.setPen(QPen(QColor("#000"), 1))
+        painter.drawLine(left + TRACK_HEADER_WIDTH, top, left + TRACK_HEADER_WIDTH, rect.bottom())
         
-        font_header = QFont("Segoe UI", 9, QFont.Bold)
-        painter.setFont(font_header)
+        # Track Names
+        first_track_idx = max(0, (int(top) - HEADER_HEIGHT) // self.track_height)
+        count = int(rect.height() // self.track_height) + 2
+        
+        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
         painter.setPen(QColor("#ccc"))
         
-        for i in range(first_track_idx, first_track_idx + tracks_visible_count):
-            # Hitung posisi Y track di scene
-            track_y = HEADER_HEIGHT + (i * th)
-            
-            # Gambar teks nama track
-            # Posisinya: X = Sticky Left + Padding, Y = Scene Y + Padding
-            text_x = left_edge + 10
-            text_y = track_y + (th / 2) + 4 # Center vertically
-            
-            # Nama Track Default
-            track_name = f"Track {i+1}"
-            
-            painter.drawText(text_x, text_y, track_name)
-            
-            # Garis bawah per header
+        for i in range(first_track_idx, first_track_idx + count):
+            ty = HEADER_HEIGHT + (i * self.track_height)
+            painter.drawText(left + 10, ty + self.track_height/2 + 5, f"Track {i+1}")
             painter.setPen(QPen(QColor("#111"), 1))
-            painter.drawLine(left_edge, track_y + th, left_edge + TRACK_HEADER_WIDTH, track_y + th)
-            painter.setPen(QColor("#ccc")) # Reset pen text
+            painter.drawLine(left, ty + self.track_height, left + TRACK_HEADER_WIDTH, ty + self.track_height)
+            painter.setPen(QColor("#ccc"))
 
-        # --- 3. CORNER BOX (Top Left) ---
-        # Kotak kosong di pojok kiri atas (pertemuan ruler dan header)
-        corner_rect = QRectF(left_edge, top_edge, TRACK_HEADER_WIDTH, HEADER_HEIGHT)
-        painter.fillRect(corner_rect, QColor("#181818")) # Lebih gelap
-        painter.setPen(QPen(QColor("#555"), 1))
-        painter.drawRect(corner_rect)
-        painter.setPen(QColor("#888"))
-        painter.drawText(corner_rect, Qt.AlignCenter, "TIMELINE")
-        
-        # Garis Bawah Ruler (Full width)
-        painter.setPen(QPen(QColor("#000"), 1))
-        painter.drawLine(left_edge, top_edge + HEADER_HEIGHT, rect.right(), top_edge + HEADER_HEIGHT)
+        # --- CORNER BOX ---
+        painter.fillRect(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT), QColor("#181818"))
+        painter.setPen(QColor("#666"))
+        painter.drawText(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT), Qt.AlignCenter, "TIMELINE")
+        painter.setPen(QPen(QColor("#333"), 1))
+        painter.drawRect(QRectF(left, top, TRACK_HEADER_WIDTH, HEADER_HEIGHT))
 
-
-    def _calculate_adaptive_step(self, min_seconds):
-        presets = [0.1, 0.5, 1.0, 5.0, 10.0, 15.0, 30.0, 60.0]
-        for p in presets:
-            if p >= min_seconds: return p
-        return 300.0
-
-    def _draw_sub_ticks(self, painter, top_y, major_x, major_step, zoom):
-        sub_count = 5
-        sub_step_px = (major_step * zoom) / sub_count
-        painter.setPen(QPen(QColor("#666"), 1))
-        for i in range(1, sub_count):
-            sub_x = major_x + (i * sub_step_px)
-            painter.drawLine(sub_x, top_y + 28, sub_x, top_y + HEADER_HEIGHT)
-
-    def _format_time(self, seconds):
-        m = int(seconds // 60)
-        s = int(seconds % 60)
-        if self.zoom_level > 80:
-            frame = int((seconds - int(seconds)) * 30)
-            return f"{m:02d}:{s:02d}:{frame:02d}"
-        return f"{m:02d}:{s:02d}"
-
+    # ==========================================
+    # HELPERS
+    # ==========================================
     def sync_all_layers(self, layers: list):
         self.last_layers_data = layers
         for item in self.clip_registry.values():
@@ -455,34 +451,25 @@ class LayerPanel(QGraphicsView):
             clip = TimelineClipItem(layer_data, i, self)
             self.scene.addItem(clip)
             self.clip_registry[layer_data.id] = clip
-            
         self._refresh_layout()
 
     def update_playhead(self, t: float):
-        # Playhead juga harus memperhitungkan offset
         x = TRACK_HEADER_WIDTH + (t * self.zoom_level)
         self.playhead.setX(x)
-        
-        visible_rect = self.mapToScene(self.viewport().rect()).boundingRect()
-        if x > visible_rect.right() - 50:
+        vis = self.mapToScene(self.viewport().rect()).boundingRect()
+        if x > vis.right() - 50:
              self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + 50)
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
-        
-        # Seek Logic
         sp = self.mapToScene(event.pos())
         top_vis = self.mapToScene(0, 0).y()
-        
-        # Klik di area Ruler dan DI KANAN Header
         if sp.y() < (top_vis + HEADER_HEIGHT) and sp.x() > TRACK_HEADER_WIDTH:
-            # Hitung waktu dg mengurangi offset
-            pixel_time = sp.x() - TRACK_HEADER_WIDTH
-            t = max(0, pixel_time / self.zoom_level)
+            t = max(0, (sp.x() - TRACK_HEADER_WIDTH) / self.zoom_level)
             self.sig_request_seek.emit(t)
             self.update_playhead(t)
 
-    # Binder requirements
+    # Binder Stubs
     def add_item_visual(self, *args): pass
     def remove_item_visual(self, *args): pass
     def clear_visual(self): pass
