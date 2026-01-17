@@ -5,10 +5,7 @@ from PySide6.QtWidgets import QFileDialog
 class MediaDialogService:
     @staticmethod
     def get_media_file(parent_widget):
-        """
-        Membuka dialog native OS.
-        Returns: dict {'type': 'video'|'image', 'path': str} or None
-        """
+        """Membuka dialog import media"""
         path, _ = QFileDialog.getOpenFileName(
             parent_widget, 
             "Import Media", 
@@ -21,3 +18,14 @@ class MediaDialogService:
             ftype = "video" if ext in ['.mp4', '.avi', '.mov'] else "image"
             return {"type": ftype, "path": path}
         return None
+
+    @staticmethod
+    def get_save_location(parent_widget, default_name="output.mp4"):
+        """[BARU] Membuka dialog save file"""
+        path, _ = QFileDialog.getSaveFileName(
+            parent_widget,
+            "Export Video",
+            default_name,
+            "Video MP4 (*.mp4)"
+        )
+        return path

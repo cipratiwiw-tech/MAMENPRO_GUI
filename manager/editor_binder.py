@@ -11,36 +11,41 @@ class EditorBinder(QObject):
         self._connect_ui_to_logic()
 
     def _connect_logic_to_ui(self):
-        # 1. Saat Layer Dibuat (Logic) -> Update Visual (UI)
+        # 1. Layer Created
         self.c.sig_layer_created.connect(self._on_layer_created)
         
-        # 2. Saat Layer Dihapus (Logic) -> Update Visual (UI)
+        # 2. Layer Removed
         self.c.sig_layer_removed.connect(self._on_layer_removed)
         
-        # 3. Saat Properti Berubah (Logic) -> Update Form & Canvas (UI)
+        # 3. Property Changed (Penting untuk Text update realtime)
         self.c.sig_property_changed.connect(self._on_property_changed)
         
-        # 4. Saat Selection Berubah (Logic) -> Update Highlight & Form (UI)
+        # 4. Selection Changed
         self.c.sig_selection_changed.connect(self._on_selection_changed)
 
     def _connect_ui_to_logic(self):
-        # 1. Layer Panel Requests
+        # Media & Layer Panel
+        self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
         self.ui.layer_panel.sig_request_add.connect(self.c.add_new_layer)
         self.ui.layer_panel.sig_request_delete.connect(self.c.delete_current_layer)
         self.ui.layer_panel.sig_layer_selected.connect(self.c.select_layer)
         
-        # 2. Setting Panel Requests
+        # Setting Panel (Transform)
         self.ui.setting_panel.sig_property_changed.connect(self.c.update_layer_property)
         
-        # 3. Media Panel Requests
-        self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
+        # Text Panel (Style) -> Logic
+        self.ui.text_panel.sig_property_changed.connect(self.c.update_layer_property)
+        
+        # [BARU] Render Tab -> Logic
+        self.ui.render_tab.sig_request_render.connect(self.c.process_render_request)
+        
+        # [BARU] Template Tab -> Logic
+        self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
 
-    # --- GLUE METHODS (Penerjemah Data Logic ke Format UI) ---
+    # --- GLUE METHODS ---
 
     def _on_layer_created(self, layer_data):
-        # Beritahu LayerPanel: "Ada item baru nih, namanya X, ID-nya Y"
         self.ui.layer_panel.add_item_visual(layer_data.id, layer_data.name)
-        # Beritahu PreviewPanel: "Render item ini"
         self.ui.preview_panel.on_layer_created(layer_data)
 
     def _on_layer_removed(self, layer_id):
@@ -48,20 +53,29 @@ class EditorBinder(QObject):
         self.ui.preview_panel.on_layer_removed(layer_id)
 
     def _on_property_changed(self, layer_id, props):
-        # Update Canvas
+        # Update Canvas Preview
         self.ui.preview_panel.on_property_changed(layer_id, props)
-        # Jika layer ini sedang disorot di SettingPanel, update juga angkanya
-        # (Idealnya cek ID dulu, tapi untuk simplifikasi kita update saja)
+        
+        # Update Form Values (Cegah loop dengan blockSignals di dalam panel jika perlu)
+        # Kita update SEMUA panel properti
         self.ui.setting_panel.update_form_visual(props)
+        self.ui.text_panel.set_values(props)
 
     def _on_selection_changed(self, layer_data):
+        # Update Highlight UI
         if layer_data:
-            # Highlight di List
             self.ui.layer_panel.select_item_visual(layer_data.id)
-            # Isi Form
-            self.ui.setting_panel.update_form_visual(layer_data.properties)
-            # Highlight di Canvas
             self.ui.preview_panel.on_selection_changed(layer_data)
+            
+            # Isi Form Properties
+            self.ui.setting_panel.update_form_visual(layer_data.properties)
+            self.ui.text_panel.set_values(layer_data.properties)
+            
+            # Auto-switch Tab (Opsional, fitur UX)
+            if layer_data.type == 'text':
+                self.ui.right_tabs.setCurrentWidget(self.ui.text_panel)
+            else:
+                self.ui.right_tabs.setCurrentWidget(self.ui.setting_panel)
         else:
             self.ui.setting_panel.clear_form()
             self.ui.preview_panel.on_selection_changed(None)

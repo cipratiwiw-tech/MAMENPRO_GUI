@@ -1,106 +1,73 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QHBoxLayout, 
-                             QLabel, QComboBox, QLineEdit, QPushButton, QFileDialog, QGridLayout)
-from PySide6.QtCore import Qt
+# gui/left_panel/render_tab.py
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QPushButton, 
+                             QLineEdit, QComboBox, QFormLayout, QHBoxLayout)
+from PySide6.QtCore import Signal
+from gui.services.media_dialog_service import MediaDialogService
 
 class RenderTab(QWidget):
-    def __init__(self):
-        super().__init__()
-        # Background utama gelap
-        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
-        
-        group = QGroupBox("EXPORT SETTINGS")
-        group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #98c379; margin-top: 6px; color: #98c379; }")
-        
-        vbox = QVBoxLayout(group)
-        vbox.setSpacing(12)
-        vbox.setContentsMargins(10, 15, 10, 10)
-        
-        # 1. Quality Selection
-        lbl_quality = QLabel("Resolution / Quality")
-        lbl_quality.setStyleSheet("color: #abb2bf; font-size: 11px; font-weight: bold;")
-        
-        self.combo_quality = QComboBox()
-        self.combo_quality.addItems(["480p (Fast)", "720p (HD)", "1080p (Full HD)", "4K (Ultra)"])
-        self.combo_quality.setCurrentIndex(2) # Default 1080p
-        self.combo_quality.setStyleSheet("""
-            QComboBox { background-color: #2b2b2b; color: #dcdcdc; border: 1px solid #3e4451; padding: 4px; border-radius: 2px; }
-            QComboBox::drop-down { border: none; }
-        """)
-        
-        vbox.addWidget(lbl_quality)
-        vbox.addWidget(self.combo_quality)
-        
-        # 2. Output Folder Section
-        lbl_folder = QLabel("Output Destination")
-        lbl_folder.setStyleSheet("color: #abb2bf; font-size: 11px; font-weight: bold;")
-        vbox.addWidget(lbl_folder)
-        
-        folder_layout = QHBoxLayout()
-        folder_layout.setSpacing(5)
-        
-        # Kolom Path
-        self.txt_folder = QLineEdit()
-        self.txt_folder.setPlaceholderText("Select output folder...")
-        self.txt_folder.setReadOnly(True)
-        self.txt_folder.setStyleSheet("background-color: #1e1e1e; color: #98c379; border: 1px solid #3e4451; font-family: Consolas; font-size: 11px; border-radius: 2px;")
-        
-        # Tombol Pilih Folder (...)
-        self.btn_browse = QPushButton("...")
-        self.btn_browse.setToolTip("Browse Folder")
-        self.btn_browse.setFixedWidth(35)
-        self.btn_browse.setCursor(Qt.PointingHandCursor)
-        self.btn_browse.setStyleSheet("background-color: #3e4451; color: white; border-radius: 2px;")
-        self.btn_browse.clicked.connect(self.on_browse_clicked)
-        
-        # Tombol Buka Folder (📂)
-        self.btn_open_folder = QPushButton("📂")
-        self.btn_open_folder.setToolTip("Open in Explorer")
-        self.btn_open_folder.setFixedWidth(35)
-        self.btn_open_folder.setCursor(Qt.PointingHandCursor)
-        self.btn_open_folder.setStyleSheet("background-color: #d19a66; color: #282c34; border-radius: 2px;")
-        
-        folder_layout.addWidget(self.txt_folder)
-        folder_layout.addWidget(self.btn_browse)
-        folder_layout.addWidget(self.btn_open_folder)
-        
-        vbox.addLayout(folder_layout)
-        
-        # 3. Action Buttons (Render & Stop)
-        action_layout = QHBoxLayout()
-        action_layout.setSpacing(5)
-        
-        self.btn_render = QPushButton("🎬 RENDER VIDEO")
-        self.btn_render.setFixedHeight(40)
-        self.btn_render.setCursor(Qt.PointingHandCursor)
-        self.btn_render.setStyleSheet("""
-            QPushButton { background-color: #2a9d8f; color: white; font-weight: bold; border-radius: 3px; border: none; }
-            QPushButton:hover { background-color: #2ec4b6; }
-            QPushButton:pressed { background-color: #264653; }
-        """)
-        
-        self.btn_stop = QPushButton("STOP")
-        self.btn_stop.setFixedHeight(40)
-        self.btn_stop.setFixedWidth(60)
-        self.btn_stop.setCursor(Qt.PointingHandCursor)
-        self.btn_stop.setStyleSheet("""
-            QPushButton { background-color: #e63946; color: white; font-weight: bold; border-radius: 3px; border: none; }
-            QPushButton:disabled { background-color: #4a2c2c; color: #7a7a7a; }
-        """)
-        self.btn_stop.setEnabled(False) 
-        
-        action_layout.addWidget(self.btn_render)
-        action_layout.addWidget(self.btn_stop)
-        
-        vbox.addStretch() # Push content to top
-        vbox.addLayout(action_layout)
-        
-        layout.addWidget(group)
+    # Signal: Mengirim dict berisi konfigurasi render ke Logic
+    sig_request_render = Signal(dict)
 
-    def on_browse_clicked(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if folder:
-            self.txt_folder.setText(folder)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background-color: #23272e; color: #dcdcdc;")
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Title
+        lbl = QLabel("EXPORT SETTINGS")
+        lbl.setStyleSheet("font-weight: bold; color: #e06c75; margin-bottom: 10px;")
+        layout.addWidget(lbl)
+
+        # Form Layout
+        form = QFormLayout()
+        
+        # 1. Output Path
+        self.txt_path = QLineEdit("output.mp4")
+        self.btn_browse = QPushButton("...")
+        self.btn_browse.setFixedWidth(30)
+        self.btn_browse.clicked.connect(self._on_browse_clicked)
+        
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(self.txt_path)
+        path_layout.addWidget(self.btn_browse)
+        form.addRow("File:", path_layout)
+
+        # 2. Resolution
+        self.combo_res = QComboBox()
+        self.combo_res.addItems(["1920x1080 (FHD)", "1280x720 (HD)", "1080x1920 (TikTok)"])
+        form.addRow("Resolution:", self.combo_res)
+
+        # 3. FPS
+        self.combo_fps = QComboBox()
+        self.combo_fps.addItems(["30 FPS", "60 FPS", "24 FPS"])
+        form.addRow("Frame Rate:", self.combo_fps)
+
+        layout.addLayout(form)
+        layout.addStretch()
+
+        # Action Button
+        self.btn_render = QPushButton("🚀 START RENDER")
+        self.btn_render.setStyleSheet("""
+            QPushButton { background-color: #e06c75; color: white; font-weight: bold; padding: 15px; border-radius: 5px; }
+            QPushButton:hover { background-color: #ff7b86; }
+        """)
+        self.btn_render.clicked.connect(self._on_render_clicked)
+        layout.addWidget(self.btn_render)
+
+    def _on_browse_clicked(self):
+        # Gunakan Service, jangan panggil QFileDialog langsung
+        path = MediaDialogService.get_save_location(self, self.txt_path.text())
+        if path:
+            self.txt_path.setText(path)
+
+    def _on_render_clicked(self):
+        # Kumpulkan data form, kirim ke Logic
+        data = {
+            "output_path": self.txt_path.text(),
+            "resolution": self.combo_res.currentText(),
+            "fps": self.combo_fps.currentText()
+        }
+        self.sig_request_render.emit(data)
