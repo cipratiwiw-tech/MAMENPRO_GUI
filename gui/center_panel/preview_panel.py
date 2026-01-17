@@ -11,101 +11,65 @@ from PySide6.QtGui import QPainter, QColor, QBrush, QWheelEvent, QMouseEvent, QP
 from gui.center_panel.canvas_items.canvas_frame import CanvasFrameItem
 from gui.center_panel.canvas_items.grid_item import GridItem
 
-# Pastikan import class yang benar
 try:
     from canvas.video_item import VideoLayerItem
 except ImportError:
-    # Fallback jika nama class di file anda masih VideoItem
     from canvas.video_item import VideoItem as VideoLayerItem
 
 # =============================================================================
-# CUSTOM VIEW: ZOOM & PAN LOGIC
+# VIEW: LOCKED CENTER (Anti Geser)
 # =============================================================================
-class ZoomableGraphicsView(QGraphicsView):
+class CenterGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         
-        # 1. HILANGKAN SCROLLBARS (Tampilan Bersih)
+        # 1. KUNCI POSISI DI TENGAH
+        # Memaksa view untuk selalu merender (0,0) scene di tengah viewport
+        self.setAlignment(Qt.AlignCenter)
+        
+        # 2. HILANGKAN SCROLLBARS
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        # Optimization Rendering
+        # 3. RENDER QUALITY
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         
-        # Zoom mengikuti posisi mouse
+        # 4. ZOOM ANCHOR
+        # Zoom tetap mengarah ke posisi mouse, tapi Viewport akan berusaha recenter
+        # karena Alignment=AlignCenter. Ini kombinasi terbaik untuk editor.
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         
-        # Background Abu Gelap
         self.setBackgroundBrush(QBrush(QColor("#151515")))
-        
-        # Pan State
-        self._is_panning = False
-        self._pan_start = QPointF()
 
-    # 🔥 FIX UTAMA: MATIKAN AUTO-SCROLL SAAT GESER ITEM 🔥
-    # Fungsi ini biasanya dipanggil otomatis saat item di-drag ke pinggir.
-    # Kita kosongkan (pass) agar canvas DIAM DI TEMPAT.
+    # 🔥 MATIKAN FITUR AUTO-SCROLL BAWAAN QT 🔥
     def ensureVisible(self, *args, **kwargs):
         pass
 
-    # 2. SCROLL MOUSE = ZOOM
     def wheelEvent(self, event: QWheelEvent):
-        # Zoom In/Out Logic
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1 / zoom_in_factor
+        # Logic Zoom Custom
+        zoom_in = 1.15
+        zoom_out = 1 / zoom_in
 
         if event.angleDelta().y() > 0:
-            zoom_factor = zoom_in_factor
+            self.scale(zoom_in, zoom_in)
         else:
-            zoom_factor = zoom_out_factor
+            self.scale(zoom_out, zoom_out)
 
-        self.scale(zoom_factor, zoom_factor)
-
-    # 3. MANUAL PANNING (Klik Tengah / Alt+Klik)
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and event.modifiers() == Qt.AltModifier):
-            self._is_panning = True
-            self._pan_start = event.pos()
-            self.setCursor(Qt.ClosedHandCursor)
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        if self._is_panning:
-            delta = event.pos() - self._pan_start
-            self._pan_start = event.pos()
-            
-            # Geser scrollbar secara manual
-            hs = self.horizontalScrollBar()
-            vs = self.verticalScrollBar()
-            hs.setValue(hs.value() - delta.x())
-            vs.setValue(vs.value() - delta.y())
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        if self._is_panning:
-            self._is_panning = False
-            self.setCursor(Qt.ArrowCursor)
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
+    # Kita matikan Manual Panning (Middle Click) agar konsisten "Diam di Tempat"
+    # User hanya bisa Zoom In/Out. Canvas selalu Center.
 
 # =============================================================================
-# MAIN PREVIEW PANEL
+# MAIN PANEL
 # =============================================================================
 class PreviewPanel(QWidget):
     sig_property_changed = Signal(str, dict) 
     sig_layer_selected = Signal(str)
 
-    # Definisi Rasio Canvas
     CANVAS_PRESETS = {
-        "9:16 (Tiktok/Reels)": (1080, 1920), # Default
+        "9:16 (Tiktok/Reels)": (1080, 1920),
         "16:9 (YouTube)": (1920, 1080),
         "1:1 (Instagram)": (1080, 1080),
         "4:5 (Portrait)": (1080, 1350),
@@ -117,48 +81,57 @@ class PreviewPanel(QWidget):
         self.layout.setContentsMargins(0,0,0,0)
         self.layout.setSpacing(0)
 
-        # Setup Scene
+        # 1. Setup Scene
         self.scene = QGraphicsScene()
         
-        # Gunakan Custom View yang sudah dimodifikasi
-        self.view = ZoomableGraphicsView(self.scene)
+        # 🔥 FIX: SET SCENE RECT RAKSASA & FIX 🔥
+        # Ini mencegah Scene "berubah ukuran" saat item di-drag keluar canvas.
+        # Dengan SceneRect tetap, titik tengah (0,0) tidak akan pernah bergeser.
+        huge_size = 50000 
+        self.scene.setSceneRect(-huge_size, -huge_size, huge_size * 2, huge_size * 2)
+        
+        # 2. Setup View
+        self.view = CenterGraphicsView(self.scene)
         self.layout.addWidget(self.view)
         
-        # Setup Default Canvas (1080x1920)
-        self.canvas_frame = CanvasFrameItem(1080, 1920)
+        # 3. Setup Canvas Frame
+        self.canvas_width = 1080
+        self.canvas_height = 1920
+        self.canvas_frame = CanvasFrameItem(self.canvas_width, self.canvas_height)
         self.scene.addItem(self.canvas_frame)
 
-        self.grid = GridItem(1080, 1920)
+        self.grid = GridItem(self.canvas_width, self.canvas_height)
         self.canvas_frame.set_grid(self.grid)
         
+        # 🔥 POSISIKAN CANVAS DI TITIK (0,0) SCENE 🔥
+        # Agar Qt.AlignCenter bekerja sempurna, pusat canvas harus di (0,0).
+        # Karena CanvasFrame titik awalnya top-left, kita geser setengah ukurannya.
+        self._center_canvas_item()
+
         self.video_service = None
         self.items_map = {} 
 
         self._init_toolbar()
         
-        # Event Listener untuk seleksi item
         self.scene.selectionChanged.connect(self._on_internal_selection)
-
-        # Auto Center saat aplikasi baru buka
+        
+        # Auto Fit Awal
         QTimer.singleShot(100, self._fit_view)
 
     def _init_toolbar(self):
         bar = QFrame()
         bar.setStyleSheet("background: #252526; border-top: 1px solid #3e4451;")
         bar.setFixedHeight(40)
-        
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 0, 10, 0)
         
-        # Ratio Selector
         self.combo_ratio = QComboBox()
         self.combo_ratio.addItems(self.CANVAS_PRESETS.keys())
-        self.combo_ratio.setCurrentIndex(0) # Default 9:16
+        self.combo_ratio.setCurrentIndex(0)
         self.combo_ratio.currentTextChanged.connect(self._on_ratio_changed)
         self.combo_ratio.setFixedWidth(150)
         layout.addWidget(self.combo_ratio)
 
-        # Grid Toggle
         chk_grid = QCheckBox("Grid")
         chk_grid.setStyleSheet("color: #ccc;")
         chk_grid.toggled.connect(lambda v: setattr(self.grid, 'visible', v) or self.grid.update())
@@ -166,29 +139,41 @@ class PreviewPanel(QWidget):
 
         layout.addStretch()
         
-        # Fit Center Button
-        btn_fit = QToolButton(text="🔍 Fit Center")
+        btn_fit = QToolButton(text="🔍 Fit View")
         btn_fit.setStyleSheet("color: white; border: 1px solid #555; padding: 3px;")
         btn_fit.clicked.connect(self._fit_view)
         layout.addWidget(btn_fit)
         
         self.layout.addWidget(bar)
 
+    def _center_canvas_item(self):
+        """Memaksa Canvas Frame agar titik tengahnya ada di (0,0) Scene"""
+        cx = -self.canvas_width / 2
+        cy = -self.canvas_height / 2
+        self.canvas_frame.setPos(cx, cy)
+
     def _on_ratio_changed(self, ratio_text):
         w, h = self.CANVAS_PRESETS.get(ratio_text, (1080, 1920))
+        self.canvas_width = w
+        self.canvas_height = h
+        
+        # Update ukuran & posisi ulang ke tengah
         self.canvas_frame.update_size(w, h)
+        self._center_canvas_item()
+        
         self._fit_view()
 
     def _fit_view(self):
-        """Reset zoom dan posisikan canvas di tengah"""
         self.view.resetTransform()
+        
+        # Kita fit ke bounding rect canvas frame
         rect = self.canvas_frame.sceneBoundingRect()
-        # Beri margin 10% agar tidak mepet
         margin = max(rect.width(), rect.height()) * 0.1
         view_rect = rect.adjusted(-margin, -margin, margin, margin)
+        
         self.view.fitInView(view_rect, Qt.KeepAspectRatio)
 
-    # --- CONTROLLER INTERFACE ---
+    # --- BINDER / LOGIC ---
 
     def set_video_service(self, service):
         self.video_service = service
@@ -207,16 +192,14 @@ class PreviewPanel(QWidget):
     def on_layer_created(self, layer_data):
         if layer_data.id in self.items_map: return
 
-        # Buat Item
         item = VideoLayerItem(layer_data.id, layer_data.path)
-        item.setParentItem(self.canvas_frame) # Attach ke frame
+        item.setParentItem(self.canvas_frame) 
         
         props = layer_data.properties
         item.start_time = float(props.get("start_time", 0.0))
         item.update_transform(props)
         item.setZValue(layer_data.z_index)
 
-        # Connect Sinyal Geser
         item.sig_transform_changed.connect(self.sig_property_changed)
         self.items_map[layer_data.id] = item
 
