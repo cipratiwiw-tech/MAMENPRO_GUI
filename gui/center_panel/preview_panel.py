@@ -12,6 +12,7 @@ from PySide6.QtGui import (
 # Import Canvas Items
 from gui.center_panel.canvas_items.canvas_frame import CanvasFrameItem
 from gui.center_panel.canvas_items.grid_item import GridItem
+from canvas.text_item import TextItem # [NEW] Import Text Item
 
 try:
     from canvas.video_item import VideoLayerItem
@@ -56,7 +57,7 @@ class PreviewPanel(QWidget):
     sig_layer_selected = Signal(str)
     sig_request_delete = Signal(str) 
     
-    # [NEW] Signal untuk update resolusi global
+    # Signal untuk update resolusi global
     sig_resolution_changed = Signal(int, int)
 
     CANVAS_PRESETS = {
@@ -157,8 +158,9 @@ class PreviewPanel(QWidget):
         items = self.scene.items(scene_pos)
         
         target_item = None
+        # Cari item teratas (bisa Video atau Text)
         for i in items:
-            if isinstance(i, VideoLayerItem):
+            if hasattr(i, "layer_id"): # Generic check
                 target_item = i
                 break
         
@@ -252,12 +254,10 @@ class PreviewPanel(QWidget):
         self.canvas_width = w
         self.canvas_height = h
         
-        # Update Visual Frame
         self.canvas_frame.update_size(w, h)
         self._center_canvas_item()
         self._fit_view()
         
-        # [NEW] Emit signal ke Controller
         self.sig_resolution_changed.emit(w, h)
 
     def _fit_view(self):
@@ -271,11 +271,12 @@ class PreviewPanel(QWidget):
         self.video_service = service
 
     def on_time_changed(self, t):
-        if self.video_service:
-            for _, item in self.items_map.items():
-                if item.isVisible() and isinstance(item, VideoLayerItem):
-                    start = getattr(item, 'start_time', 0.0)
-                    item.sync_frame(t - start, self.video_service)
+        # Sync semua layer yang terlihat (Video & Text)
+        for _, item in self.items_map.items():
+            if item.isVisible():
+                start = getattr(item, 'start_time', 0.0)
+                # VideoService hanya dipakai oleh VideoLayerItem, TextItem akan ignore
+                item.sync_frame(t - start, self.video_service)
         
         total_seconds = int(t)
         rem_ms = int((t - total_seconds) * 100)
@@ -289,19 +290,36 @@ class PreviewPanel(QWidget):
 
     def on_layer_created(self, layer_data):
         if layer_data.id in self.items_map: return
-        item = VideoLayerItem(layer_data.id, layer_data.path)
+        
+        # [FIX] Factory Logic: Bedakan Item berdasarkan Tipe
+        if layer_data.type == 'text':
+            content = layer_data.properties.get("text_content", "Text")
+            item = TextItem(layer_data.id, content)
+        else:
+            # Video / Image / Audio
+            item = VideoLayerItem(layer_data.id, layer_data.path)
+            
         item.setParentItem(self.canvas_frame) 
+        
+        # Set properti awal
         props = layer_data.properties
         item.start_time = float(props.get("start_time", 0.0))
+        
+        # Panggil update_transform (sekarang TextItem juga punya method ini)
         item.update_transform(props)
         item.setZValue(layer_data.z_index)
-        item.sig_transform_changed.connect(self.sig_property_changed)
+        
+        # Sambungkan signal perubahan interaktif (drag/scale di canvas)
+        if hasattr(item, 'sig_transform_changed'):
+            item.sig_transform_changed.connect(self.sig_property_changed)
+            
         self.items_map[layer_data.id] = item
 
     def on_layer_removed(self, lid):
         if lid in self.items_map:
             item = self.items_map[lid]
-            item.sig_transform_changed.disconnect() 
+            if hasattr(item, 'sig_transform_changed'):
+                item.sig_transform_changed.disconnect() 
             self.scene.removeItem(item)
             del self.items_map[lid]
 
@@ -309,17 +327,16 @@ class PreviewPanel(QWidget):
         if layer_id in self.items_map:
             item = self.items_map[layer_id]
             item.blockSignals(True)
-
+            
+            # Panggil method update yang kompatibel
             item.update_transform(props)
-
+            
             if "z_index" in props:
                 item.setZValue(props["z_index"])
-
+                
+            item.blockSignals(False)
             if "start_time" in props:
                 item.start_time = float(props["start_time"])
-
-            item.blockSignals(False)
-
 
     def on_selection_changed(self, layer_data):
         self.scene.blockSignals(True)

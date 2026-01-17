@@ -1,7 +1,7 @@
+# engine/video_service.py
 import cv2
 import os
 from PySide6.QtGui import QPixmap, QImage, QColor
-# [1] Import Cache yang sudah Anda buat
 from engine.frame_cache import FrameCache
 
 class VideoService:
@@ -19,7 +19,7 @@ class VideoService:
         # layer_id -> path
         self._id_map = {}
         
-        # [2] Inisialisasi Cache Frame Video (simpan 100 frame terakhir di RAM)
+        # Cache Frame Video (simpan 100 frame terakhir di RAM)
         self._video_frame_cache = FrameCache(max_frames=100)
 
     # ---------- REGISTRATION ----------
@@ -67,37 +67,29 @@ class VideoService:
     # ---------- RENDER / COMPOSITOR API ----------
 
     def get_frame_image(self, path: str, local_time: float) -> QImage:
+        # [FIX] Guard clause: Jangan proses jika path kosong
+        if not path:
+            return QImage()
         return self._get_image_by_time(path, local_time)
 
     # ---------- INTERNAL ----------
 
     def _get_image_by_time(self, path: str, time_sec: float) -> QImage:
+        # [FIX] Guard clause tambahan
+        if not path:
+            return QImage()
+
         # A. Cek Image Static Layer
         for lid, p in self._id_map.items():
             if p == path and lid in self._image_cache:
                 return self._image_cache[lid]
 
-        # B. [BARU] Cek Cache Video di RAM (Kunci smooth playback)
-        # Buat key unik kombinasi path + waktu
-        cache_key = f"{path}_{round(time_sec, 3)}" 
-        cached_frame = self._video_frame_cache.get(time_sec) # atau pakai key string jika perlu logic kompleks
-        
-        # Sederhananya, jika logic cache Anda pakai float time sebagai key (sesuai file frame_cache.py):
+        # B. Cek Cache Video di RAM
         cached_frame = self._video_frame_cache.get(time_sec)
-        
-        # Tapi karena 'time_sec' bisa sama untuk file beda,
-        # idealnya FrameCache dimodifikasi biar support 'path' sebagai key juga.
-        # Atau cara gampangnya: kita bikin cache per-path (rumit).
-        # Solusi Cepat: Kita pakai cache global, tapi hati-hati kalau ada 2 video jalan bareng.
-        
-        # UNTUK SEKARANG, kita abaikan isu multi-video di cache (asumsi 1 layer utama preview)
-        # Jika ingin perfect, key cache harus (path, time).
-        # Mari kita pakai implementasi sederhana dulu:
-        
         if cached_frame:
             return cached_frame
 
-        # C. Jika tidak ada di cache, baru baca dari OpenCV (Berat)
+        # C. Jika tidak ada di cache, baru baca dari OpenCV
         cap = self._get_reader(path)
         if not cap:
             return QImage()
@@ -109,7 +101,7 @@ class VideoService:
         target_frame = int(round(time_sec * fps))
         img = self._read_frame(cap, target_frame)
         
-        # [3] Simpan hasil baca ke Cache
+        # Simpan hasil baca ke Cache
         if not img.isNull():
             self._video_frame_cache.put(time_sec, img)
             
@@ -121,7 +113,6 @@ class VideoService:
         self._readers.clear()
         self._image_cache.clear()
         self._id_map.clear()
-        # [4] Bersihkan cache saat reset
         self._video_frame_cache.clear()
 
     def _read_frame(self, cap, frame_index: int) -> QImage:
@@ -140,13 +131,21 @@ class VideoService:
         ).copy()
 
     def _get_reader(self, path: str):
-        if path not in self._readers:
-            cap = cv2.VideoCapture(path)
-            if not cap.isOpened():
-                return None
-            self._readers[path] = cap
-        return self._readers[path]
+        # [FIX] Guard clause: Jangan buka OpenCV jika path kosong
+        if not path:
+            return None
 
+        if path not in self._readers:
+            try:
+                cap = cv2.VideoCapture(path)
+                if not cap.isOpened():
+                    return None
+                self._readers[path] = cap
+            except Exception as e:
+                print(f"Error opening video reader: {e}")
+                return None
+                
+        return self._readers[path]
 
     @staticmethod
     def _blank():

@@ -20,7 +20,6 @@ from gui.center_panel.preview_panel import PreviewPanel
 from gui.panels.layer_panel import LayerPanel
 from gui.panels.media_panel import MediaPanel
 from gui.right_panel.setting_panel import SettingPanel
-from gui.panels.text_panel import TextPanel
 from gui.left_panel.render_tab import RenderTab
 from gui.left_panel.template_tab import TemplateTab
 from gui.left_panel.audio_tab import AudioTab
@@ -52,7 +51,6 @@ class VideoEditorApp(QMainWindow):
 
         # RIGHT (PROPERTIES)
         self.setting_panel = SettingPanel()
-        self.text_panel = TextPanel()
         self.render_tab = RenderTab()  # 🔥 SELALU TERLIHAT
 
         # STATUS BAR
@@ -124,9 +122,8 @@ class VideoEditorApp(QMainWindow):
 
         # ---- PROPERTIES TABS
         self.right_tabs = QTabWidget()
-        self.right_tabs.addTab(self.setting_panel, "Transform")
-        self.right_tabs.addTab(self.text_panel, "Style")
-
+        self.right_tabs.addTab(self.setting_panel, "Properties")
+      
         right_layout.addWidget(self.right_tabs, 1)
 
         # ---- SEPARATOR

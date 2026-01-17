@@ -72,7 +72,6 @@ class EditorBinder(QObject):
         
         # 4. PROPERTIES (PANEL KANAN)
         self.ui.setting_panel.sig_property_update.connect(self.c.update_layer_property)
-        self.ui.text_panel.sig_property_changed.connect(self.c.update_layer_property)
         
         # 5. RENDER (✅ NAMA SINYAL DIPERBAIKI)
         self.ui.render_tab.sig_start_render.connect(self.c.process_render)
@@ -112,15 +111,9 @@ class EditorBinder(QObject):
     def _on_selection_changed(self, layer_data):
         self.ui.preview_panel.on_selection_changed(layer_data)
         
-        # Panggil Panel Properties Baru
-        # Kirim FULL object layer_data agar panel tahu TIPE layer-nya (kontekstual)
-        if hasattr(self.ui, 'setting_panel'):
-            self.ui.setting_panel.set_values(layer_data)
-            
-        # Text Panel Legacy (Opsional: Bisa digabung nanti)
-        props = layer_data.properties if layer_data else {}
-        self.ui.text_panel.set_values(props)
-        
+        # Kirim data hanya ke SettingPanel (dia sudah pintar handle text/video)
+        self.ui.setting_panel.set_values(layer_data) # Kirim object full, bukan cuma props     
+              
         if layer_data:
             self.ui.layer_panel.select_item_visual(layer_data.id)
 
