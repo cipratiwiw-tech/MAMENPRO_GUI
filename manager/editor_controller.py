@@ -1,9 +1,12 @@
 # manager/editor_controller.py
 
-from PySide6.QtCore import QObject, Signal
+import json
 import uuid
 import os
-
+from datetime import datetime
+from PySide6.QtCore import QObject, Signal, QUrl # <--- [FIX] Tambah QUrl
+from PySide6.QtWidgets import QFileDialog
+from PySide6.QtGui import QDesktopServices
 # STATE & DATA
 from manager.project_state import ProjectState, LayerData
 
@@ -30,10 +33,14 @@ class EditorController(QObject):
     sig_status_message = Signal(str)
     sig_layers_reordered = Signal(list)
     sig_preview_update = Signal(float, list) 
+    sig_render_started = Signal()          # Signal render mulai
+    sig_render_finished = Signal(bool, str) # Signal render selesai (Success/Fail, Msg)
+    sig_render_progress = Signal(int)       # Signal progress (0-100)
 
     def __init__(self):
         super().__init__()
         self.state = ProjectState()
+        self.render_service = RenderService() # <--- INIT SERVICE
         
         self.current_frame = 0
         self.fps = 30.0
@@ -53,7 +60,135 @@ class EditorController(QObject):
         
         self.cap_service.sig_success.connect(self._on_caption_success)
         self.cap_service.sig_fail.connect(self._on_caption_error)
+        
+        # Connect Service Signals ke Controller Signals
+        # (Asumsi RenderService punya signal: sig_progress, sig_finished, sig_error)
+        if hasattr(self.render_service, 'sig_progress'):
+            self.render_service.sig_progress.connect(self.sig_render_progress)
+        
+        if hasattr(self.render_service, 'sig_finished'):
+            self.render_service.sig_finished.connect(self._on_service_render_finished)
+            
+        if hasattr(self.render_service, 'sig_error'):
+            self.render_service.sig_error.connect(self._on_service_render_error)
 
+        # Load Config
+        self.config_file = "user_config.json"
+        self.user_config = self._load_config()
+        default_path = os.path.join(os.path.expanduser("~"), "Desktop")
+        self.output_path = self.user_config.get("output_path", default_path)
+        
+    # --- RENDER LOGIC (IMPLEMENTASI BARU) ---
+
+    def start_rendering_process(self, ui_config):
+        """Dipanggil oleh UI saat tombol Export ditekan"""
+        
+        # 1. Tentukan Path Output (Folder)
+        final_folder = ui_config.get('path')
+        if not final_folder:
+            final_folder = self.output_path # Default dari config/desktop
+            
+        # Validasi path folder
+        if not os.path.isdir(final_folder):
+            self.sig_status_message.emit("❌ Invalid Output Folder!")
+            return
+
+        # Ambil durasi total dari timeline
+        total_duration = self.timeline.get_total_duration()
+
+        # 2. Generate Nama File Unik (Timestamp)
+        # Format: mamenpro_20260118_143005.mp4
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"mamenpro_{timestamp}.mp4"
+        
+        # [PENTING] Gabungkan Folder + Filename jadi satu path lengkap
+        full_output_path = os.path.join(final_folder, filename)
+
+        # 3. Susun Konfigurasi
+        render_config = {
+            "output_path": full_output_path, # <--- [FIX] Service butuh key ini
+            "quality": ui_config.get('quality', 'medium'),
+            "width": self.state.width,
+            "height": self.state.height,
+            "fps": getattr(self, 'fps', 30),
+            "layers": self.state.layers,
+            "duration": total_duration if total_duration > 0 else 10 
+        }
+
+        # 4. Mulai Render
+        self.sig_status_message.emit(f"🚀 Rendering to: {filename}...")
+        self.sig_render_started.emit() 
+        
+        # Panggil Render Service
+        success, worker_or_msg = self.render_service.start_render_process(
+            self.timeline, render_config, self.video_service
+        )
+
+        if success:
+            worker = worker_or_msg
+            worker.sig_progress.connect(self.sig_render_progress)
+            worker.sig_finished.connect(self._on_service_render_finished)
+        else:
+            self.sig_status_message.emit(f"❌ Failed to start: {worker_or_msg}")
+            self.sig_render_finished.emit(False, worker_or_msg)
+            
+    def stop_rendering_process(self):
+        """Dipanggil oleh UI saat tombol Stop ditekan"""
+        self.render_service.cancel_render()
+        self.sig_status_message.emit("🛑 Stopping Render...")
+        
+    # --- CONFIG MANAGEMENT ---
+    def _load_config(self):
+        """Load user_config.json, return dict kosong jika gagal"""
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading config: {e}")
+        return {}
+
+    def _save_config(self):
+        """Simpan self.user_config ke file"""
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump(self.user_config, f, indent=4)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+    # --- OUTPUT FOLDER LOGIC ---
+    def get_output_path(self):
+        """Return current output path"""
+        return self.output_path
+
+    def select_output_directory(self, parent_widget=None):
+        """Buka dialog pilih folder, simpan hasil, dan update config"""
+        folder = QFileDialog.getExistingDirectory(
+            parent_widget, 
+            "Select Output Folder", 
+            self.output_path
+        )
+        
+        if folder:
+            self.output_path = folder
+            # Update config
+            self.user_config["output_path"] = folder
+            self._save_config()
+            return True # Return true jika berubah
+        return False
+
+    def open_output_folder(self):
+        """Buka folder output di Windows Explorer / Finder"""
+        path_to_open = self.output_path
+        
+        # Pastikan path valid
+        if path_to_open and os.path.isdir(path_to_open):
+            # [FIX] Gunakan QDesktopServices yang sudah diimport
+            url = QUrl.fromLocalFile(path_to_open)
+            QDesktopServices.openUrl(url)
+        else:
+            self.sig_status_message.emit(f"⚠️ Folder not found: {path_to_open}")
+            
     # --- TIME LOGIC ---
     def time_to_frame(self, time_sec: float) -> int:
         if time_sec < 0: return 0
@@ -404,3 +539,12 @@ class EditorController(QObject):
 
     def remove_chroma_config(self):
         self.update_layer_property(self.state.selected_layer_id, {"chroma_active": False})
+    # --- INTERNAL HANDLERS ---
+
+    def _on_service_render_finished(self, output_file):
+        self.sig_render_finished.emit(True, f"Saved to: {output_file}")
+        self.sig_status_message.emit(f"✅ Render Success: {output_file}")
+
+    def _on_service_render_error(self, error_msg):
+        self.sig_render_finished.emit(False, error_msg)
+        self.sig_status_message.emit(f"❌ Render Failed: {error_msg}")

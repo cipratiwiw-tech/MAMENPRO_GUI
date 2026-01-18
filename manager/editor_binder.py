@@ -63,8 +63,21 @@ class EditorBinder(QObject):
         # 3. PROPERTIES
         self.ui.setting_panel.sig_property_update.connect(self.c.update_layer_property)
         
-        # 4. RENDER
-        self.ui.render_tab.sig_start_render.connect(self.c.process_render)
+        # --- RENDER TAB CONNECTIONS ---
+        if hasattr(self.ui, 'render_tab'):
+            # 1. Load Path Awal dari Config ke UI
+            initial_path = self.c.get_output_path()
+            self.ui.render_tab.set_output_path(initial_path)
+
+            # 2. Connect Tombol Select Folder
+            self.ui.render_tab.sig_select_output_dir.connect(self._on_select_output_dir)
+
+            # 3. Connect Tombol Open Folder
+            self.ui.render_tab.sig_open_output_dir.connect(self.c.open_output_folder)
+
+            # 4. Render & Stop
+            self.ui.render_tab.sig_start_render.connect(self.c.start_rendering_process)
+            self.ui.render_tab.sig_stop_render.connect(self.c.stop_rendering_process)
         
         # 5. MENU ACTIONS
         self.ui.action_save.triggered.connect(self._on_menu_save)
@@ -73,15 +86,15 @@ class EditorBinder(QObject):
 
         # --- LEFT PANEL CONNECTIONS ---
         
-        # Media Panel
-        self.ui.media_panel.sig_request_import.connect(self.c.add_new_layer)
-        
-        # Text Panel (Intent)
-        self.ui.text_panel.sig_add_text.connect(self.c.add_text_layer)
-        
-        # Background Panel (Intent)
-        self.ui.bg_panel.sig_set_background.connect(self.c.add_background_layer)
-        
+        # [NEW] Assets Panel (Combined Logic)
+        if hasattr(self.ui, 'assets_panel'):
+            # 1. Media
+            self.ui.assets_panel.sig_request_import.connect(self.c.add_new_layer)
+            # 2. Background
+            self.ui.assets_panel.sig_set_background.connect(self.c.add_background_layer)
+            # 3. Text & Paragraph
+            self.ui.assets_panel.sig_add_text.connect(self.c.add_text_layer)
+            
         # Templates
         self.ui.template_tab.sig_apply_template.connect(self.c.apply_template)
         
@@ -102,7 +115,13 @@ class EditorBinder(QObject):
         self.ui.util_panel.bulk_panel.sig_start_bulk.connect(self.c.process_bulk_render)
 
     # --- HANDLERS ---
-
+    def _on_select_output_dir(self):
+        """Wrapper agar bisa passing 'self.ui' sebagai parent dialog"""
+        if self.c.select_output_directory(self.ui):
+            # Jika path berubah, update tampilan UI
+            new_path = self.c.get_output_path()
+            self.ui.render_tab.set_output_path(new_path)
+            
     def _on_preview_update(self, t, active_ids):
         self.ui.preview_panel.sync_layer_visibility(active_ids)
         self.ui.preview_panel.on_time_changed(t)
