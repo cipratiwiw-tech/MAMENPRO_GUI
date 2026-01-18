@@ -67,7 +67,12 @@ class VideoService:
         if layer_id in self._image_cache:
             return self._image_cache[layer_id]
 
-        cached = self._video_frame_cache.get(time)
+        # [FIX] Buat Unique Key: LayerID + Waktu
+        # Format string biar unik per layer
+        cache_key = f"{layer_id}_{round(time, 3)}"
+
+        # Panggil cache dengan key unik
+        cached = self._video_frame_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -76,11 +81,16 @@ class VideoService:
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         frame_idx = int(time * fps)
+        
+        # Optimasi seek: Jangan seek jika posisinya sudah pas (opsional tapi bagus)
+        # if abs(cap.get(cv2.CAP_PROP_POS_FRAMES) - frame_idx) > 1:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        
         ok, frame = cap.read()
         
         if ok:
-            self._video_frame_cache.put(time, frame)
+            # Simpan dengan key unik
+            self._video_frame_cache.put(cache_key, frame)
             return frame
         return None
 
