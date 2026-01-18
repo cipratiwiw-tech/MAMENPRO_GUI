@@ -25,7 +25,11 @@ class FFmpegRenderer:
         else:
             cmd.extend(['-map', '0:v'])
 
-        cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-shortest', self.output_path])
+        # [PERBAIKAN RENDER FULL DURATION]
+        # HAPUS '-shortest'. Jangan pakai flag ini!
+        # Kita ingin render sepanjang frame yang dikirim Python, bukan berhenti saat audio habis.
+        cmd.extend(['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', self.output_path])
+        
         print(f"[FFMPEG] {' '.join(cmd)}")
 
         startupinfo = None
@@ -33,7 +37,6 @@ class FFmpegRenderer:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-        # [FIX] stderr=None untuk mencegah macet buffer
         self.process = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stderr=None, stdout=None, startupinfo=startupinfo
         )

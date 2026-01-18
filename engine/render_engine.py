@@ -96,9 +96,6 @@ class RenderEngine:
                 start_offset = float(props.get("start_time", 0.0))
                 local_time = global_time - start_offset
                 
-                # [FIX UTAMA DI SINI] 
-                # Bungkus ulang properti Flat (brightness) ke Nested (color.brightness)
-                # agar VideoService mengerti dan mau menerapkan efeknya.
                 render_props = {
                     "color": {
                         "brightness": props.get("brightness", 0),
@@ -113,7 +110,6 @@ class RenderEngine:
                     }
                 }
                 
-                # Kirim render_props yang sudah rapi
                 qimg = self.video_service.get_frame(layer.id, local_time, render_props)
                 
                 if not qimg.isNull():
@@ -123,13 +119,21 @@ class RenderEngine:
                         qimg = ChromaProcessor.process_qimage(qimg, c_color, c_thresh)
                     
                     w, h = qimg.width(), qimg.height()
-                    painter.translate(x + (w*scale)/2, y + (h*scale)/2)
+                    
+                    # [PERBAIKAN POSISI]
+                    # Gunakan w/2 dan h/2 (TANPA scale) agar pivot point konsisten 
+                    # dengan QGraphicsItem di preview.
+                    painter.translate(x + w/2, y + h/2)
+                    
                     painter.rotate(rotation)
                     painter.scale(scale, scale)
                     painter.setOpacity(opacity)
+                    
+                    # Draw image centered at (0,0) local coord
                     painter.drawImage(-w/2, -h/2, qimg)
 
         elif layer_type in ['text', 'caption']:
+            # ... (kode text biarkan sama, atau sesuaikan pivotnya jika perlu)
             text = props.get("text_content", "Text")
             font = QFont(props.get("font_family", "Arial"), int(props.get("font_size", 60)))
             if props.get("is_bold"): font.setBold(True)
@@ -140,7 +144,8 @@ class RenderEngine:
             rect = fm.boundingRect(text)
             text_w, text_h = rect.width(), rect.height()
             
-            painter.translate(x + (text_w*scale)/2, y + (text_h*scale)/2)
+            # Text biasanya pivotnya center juga agar rotasi aman
+            painter.translate(x + text_w/2, y + text_h/2)
             painter.rotate(rotation)
             painter.scale(scale, scale)
             painter.setOpacity(opacity)
